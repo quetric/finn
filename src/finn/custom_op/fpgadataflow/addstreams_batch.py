@@ -46,9 +46,8 @@ class AddStreams_Batch(HLSCustomOp):
         my_attrs = {
             "NumChannels": ("i", True, ""),
             "PE": ("i", True, ""),
-            # FINN DataTypes for inputs, outputs
+            # FINN DataTypes for inputs; output datatype inferred from input
             "inputDataType": ("s", True, ""),
-            "outputDataType": ("s", True, ""),
             # number of input vectors, examples:
             # [1] is a single vector (like a FC layer with batch=1)
             # [4] is four vectors (like a FC layer with batch=4)
@@ -99,7 +98,12 @@ class AddStreams_Batch(HLSCustomOp):
         )
 
     def infer_node_datatype(self, model):
-        odt = DataType[self.get_nodeattr("outputDataType")]
+        # check input datatype against property
+        exp_idt_name = self.get_input_datatype().name
+        idt_name = self.get_nodeattr("inputDataType")
+        assert exp_idt_name == idt_name, "Bad input DataType for AddStreams layer"
+        # enforce output data type
+        odt = self.get_output_datatype()
         model.set_tensor_datatype(self.onnx_node.output[0], odt)
 
     def verify_node(self):
@@ -125,7 +129,6 @@ class AddStreams_Batch(HLSCustomOp):
             self.get_nodeattr("NumChannels")
             self.get_nodeattr("PE")
             self.get_nodeattr("inputDataType")
-            self.get_nodeattr("outputDataType")
             info_messages.append("All necessary attributes exist")
         except Exception:
             info_messages.append(
@@ -140,7 +143,12 @@ class AddStreams_Batch(HLSCustomOp):
 
     def get_output_datatype(self):
         """Returns FINN DataType of output."""
-        return DataType[self.get_nodeattr("outputDataType")]
+        # we need to set output datatype to the next larger int or uint
+        idt = DataType[self.get_nodeattr("inputDataType")]
+        if idt.signed():
+            return DataType.get_smallest_possible(2 * idt.min())
+        else:
+            return DataType.get_smallest_possible(2 * idt.max())
 
     def get_instream_width(self):
         """Returns input stream width."""

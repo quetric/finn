@@ -537,7 +537,6 @@ class InferAddStreamsLayer(Transformation):
 
                 idt0 = model.get_tensor_datatype(in0)
                 idt1 = model.get_tensor_datatype(in1)
-                odt = model.get_tensor_datatype(result)
 
                 # skip if different data types on inputs
                 if idt0 != idt1:
@@ -567,7 +566,6 @@ class InferAddStreamsLayer(Transformation):
                     NumChannels=num_channels,
                     PE=pe,
                     inputDataType=idt.name,
-                    outputDataType=odt.name,
                 )
                 graph.node.insert(node_ind, new_node)
                 # remove old node

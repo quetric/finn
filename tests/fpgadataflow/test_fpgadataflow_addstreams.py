@@ -46,7 +46,7 @@ from finn.transformation.fpgadataflow.replace_verilog_relpaths import (
 )
 
 
-def make_addstreams_modelwrapper(ch, pe, idt, odt):
+def make_addstreams_modelwrapper(ch, pe, idt):
     inp1 = helper.make_tensor_value_info("inp1", TensorProto.FLOAT, [1, ch])
     inp2 = helper.make_tensor_value_info("inp2", TensorProto.FLOAT, [1, ch])
     outp = helper.make_tensor_value_info("outp", TensorProto.FLOAT, [1, ch])
@@ -60,7 +60,6 @@ def make_addstreams_modelwrapper(ch, pe, idt, odt):
         NumChannels=ch,
         PE=pe,
         inputDataType=idt.name,
-        outputDataType=odt.name,
     )
     graph = helper.make_graph(
         nodes=[addstreams_node], name="graph", inputs=[inp1, inp2], outputs=[outp],
@@ -71,7 +70,6 @@ def make_addstreams_modelwrapper(ch, pe, idt, odt):
 
     model.set_tensor_datatype("inp1", idt)
     model.set_tensor_datatype("inp2", idt)
-    model.set_tensor_datatype("outp", odt)
 
     return model
 
@@ -82,14 +80,13 @@ def prepare_inputs(input1, input2):
 
 # data types
 @pytest.mark.parametrize("idt", [DataType.UINT4, DataType.UINT8])
-@pytest.mark.parametrize("odt", [DataType.UINT16])
 # channels
 @pytest.mark.parametrize("ch", [1, 64])
 # folding
 @pytest.mark.parametrize("fold", [-1, 2, 1])
 # execution mode
 @pytest.mark.parametrize("exec_mode", ["cppsim", "rtlsim"])
-def test_fpgadataflow_addstreams(idt, odt, ch, fold, exec_mode):
+def test_fpgadataflow_addstreams(idt, ch, fold, exec_mode):
     if fold == -1:
         pe = 1
     else:
@@ -100,7 +97,7 @@ def test_fpgadataflow_addstreams(idt, odt, ch, fold, exec_mode):
     x1 = gen_finn_dt_tensor(idt, (1, ch))
     x2 = gen_finn_dt_tensor(idt, (1, ch))
 
-    model = make_addstreams_modelwrapper(ch, pe, idt, odt)
+    model = make_addstreams_modelwrapper(ch, pe, idt)
 
     if exec_mode == "cppsim":
         model = model.transform(PrepareCppSim())

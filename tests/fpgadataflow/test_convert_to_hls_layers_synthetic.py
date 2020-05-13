@@ -27,6 +27,7 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 import os
+import numpy as np
 
 from onnx import TensorProto, helper
 
@@ -35,6 +36,7 @@ from finn.core.datatype import DataType
 from finn.core.modelwrapper import ModelWrapper
 from finn.transformation.fold_constants import FoldConstants
 from finn.transformation.general import GiveReadableTensorNames, GiveUniqueNodeNames
+from finn.transformation.streamline.reorder import MoveScalarLinearPastEltwiseAdd
 from finn.transformation.infer_shapes import InferShapes
 from finn.util.basic import gen_finn_dt_tensor
 from finn.util.test import soft_verify_topk
@@ -54,39 +56,61 @@ export_onnx_path = "test_output_synthetic.onnx"
 # graph should just be a sum
 
 
-def make_model(ch, ifmdim, idt, odt):
+def make_model(ch, ifmdim):
     if ifmdim == -1:
         shape = [1, ch]
     else:
         shape = [1, ch, ifmdim, ifmdim]
     inp1 = helper.make_tensor_value_info("inp1", TensorProto.FLOAT, shape)
     inp2 = helper.make_tensor_value_info("inp2", TensorProto.FLOAT, shape)
+    inp1_add = helper.make_tensor_value_info("inp1_add", TensorProto.FLOAT, shape)
+    inp1_add_ct = helper.make_tensor_value_info("inp1_add_ct", TensorProto.FLOAT, shape)
+    inp2_add = helper.make_tensor_value_info("inp2_add", TensorProto.FLOAT, shape)
+    inp2_add_ct = helper.make_tensor_value_info("inp2_add_ct", TensorProto.FLOAT, shape)
+    inp1_mul = helper.make_tensor_value_info("inp1_mul", TensorProto.FLOAT, shape)
+    inp1_mul_ct = helper.make_tensor_value_info("inp1_mul_ct", TensorProto.FLOAT, shape)
+    inp2_mul = helper.make_tensor_value_info("inp2_mul", TensorProto.FLOAT, shape)
+    inp2_mul_ct = helper.make_tensor_value_info("inp2_mul_ct", TensorProto.FLOAT, shape)
     outp = helper.make_tensor_value_info("outp", TensorProto.FLOAT, shape)
 
-    add_node = helper.make_node("Add", ["inp1", "inp2"], ["outp"])
+    add1_node = helper.make_node("Add", [inp1.name, inp1_add_ct.name], [inp1_add.name])
+    add2_node = helper.make_node("Add", [inp2.name, inp2_add_ct.name], [inp2_add.name])
+    mul1_node = helper.make_node(
+        "Mul", [inp1_add.name, inp1_mul_ct.name], [inp1_mul.name]
+    )
+    mul2_node = helper.make_node(
+        "Mul", [inp2_add.name, inp2_mul_ct.name], [inp2_mul.name]
+    )
+    eltwise_add_node = helper.make_node(
+        "Add", [inp1_mul.name, inp2_mul.name], [outp.name]
+    )
     graph = helper.make_graph(
-        nodes=[add_node], name="graph", inputs=[inp1, inp2], outputs=[outp],
+        nodes=[add1_node, add2_node, mul1_node, mul2_node, eltwise_add_node],
+        name="graph",
+        inputs=[inp1, inp2],
+        outputs=[outp],
     )
 
     model = helper.make_model(graph, producer_name="add-model")
     model = ModelWrapper(model)
 
-    model.set_tensor_datatype("inp1", idt)
-    model.set_tensor_datatype("inp2", idt)
-    model.set_tensor_datatype("outp", odt)
+    # set initializers for scalar add/mul nodes
+    model.set_initializer(add1_node.input[1], np.array([7.0]))
+    model.set_initializer(add2_node.input[1], np.array([8.0]))
+    model.set_initializer(mul1_node.input[1], np.array([3.0]))
+    model.set_initializer(mul2_node.input[1], np.array([3.0]))
 
     return model
 
 
 # data types
 @pytest.mark.parametrize("idt", [DataType.UINT4])
-@pytest.mark.parametrize("odt", [DataType.UINT16])
 # channels
 @pytest.mark.parametrize("ch", [64])
 # ifmdim
 @pytest.mark.parametrize("ifmdim", [-1])
-def test_convert_to_hls_layers_synthetic(ch, ifmdim, idt, odt):
-    model = make_model(ch, ifmdim, idt, odt)
+def test_convert_to_hls_layers_synthetic(ch, ifmdim, idt):
+    model = make_model(ch, ifmdim)
     model.save(export_onnx_path)
     model = ModelWrapper(export_onnx_path)
     model = model.transform(DoubleToSingleFloat())
@@ -109,10 +133,19 @@ def test_convert_to_hls_layers_synthetic(ch, ifmdim, idt, odt):
 
     output_dict = oxe.execute_onnx(model, input_dict, True)
     produced_sum = output_dict[model.graph.output[0].name]
-    assert (produced_sum == (x1 + x2)).all()
+    assert (produced_sum == (3.0 * ((x1 + x2) + 15.0))).all()
+
+    model = model.transform(MoveScalarLinearPastEltwiseAdd())
+
+    # verify again, to check we didnt break anything
+    output_dict = oxe.execute_onnx(model, input_dict, True)
+    produced_sum = output_dict[model.graph.output[0].name]
+    assert (produced_sum == (3.0 * ((x1 + x2) + 15.0))).all()
 
     model = model.transform(InsertTopK())
     model = model.transform(InferShapes())
+    model = model.transform(GiveUniqueNodeNames())
+    model = model.transform(GiveReadableTensorNames())
 
     # check topk output is as expected
     output_dict = oxe.execute_onnx(model, input_dict, True)
@@ -121,6 +154,8 @@ def test_convert_to_hls_layers_synthetic(ch, ifmdim, idt, odt):
     assert soft_verify_topk(topk_input, produced_topk, 5)
 
     # convert to hls
+    model.set_tensor_datatype(model.graph.input[0].name, idt)
+    model.set_tensor_datatype(model.graph.input[1].name, idt)
     model = model.transform(to_hls.InferAddStreamsLayer())
     model = model.transform(to_hls.InferLabelSelectLayer())
 
