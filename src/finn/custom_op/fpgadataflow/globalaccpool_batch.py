@@ -75,7 +75,7 @@ class GlobalAccPool_Batch(HLSCustomOp):
     def get_normal_output_shape(self):
         ch = self.get_nodeattr("NumChannels")
         vecs = list(self.get_nodeattr("numInputVectors"))
-        oshape = tuple([vecs[0], 1, 1] + [ch])
+        oshape = tuple([vecs[0]] + [ch])
         return oshape
 
     def get_folded_output_shape(self):
@@ -84,7 +84,7 @@ class GlobalAccPool_Batch(HLSCustomOp):
         vecs = list(self.get_nodeattr("numInputVectors"))
         assert ch % pe == 0, "PE must divide NumChannels"
         folds = int(ch / pe)
-        oshape = tuple([vecs[0], 1, 1] + [folds, pe])
+        oshape = tuple([vecs[0]] + [folds, pe])
         return oshape
 
     def make_shape_compatible_op(self, model):

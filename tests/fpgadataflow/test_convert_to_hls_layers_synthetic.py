@@ -57,21 +57,21 @@ export_onnx_path = "test_output_synthetic.onnx"
 
 
 def make_model(ch, ifmdim):
-    if ifmdim == -1:
-        shape = [1, ch]
-    else:
-        shape = [1, ch, ifmdim, ifmdim]
+    shape = [1, ch, ifmdim, ifmdim]
     inp1 = helper.make_tensor_value_info("inp1", TensorProto.FLOAT, shape)
     inp2 = helper.make_tensor_value_info("inp2", TensorProto.FLOAT, shape)
     inp1_add = helper.make_tensor_value_info("inp1_add", TensorProto.FLOAT, shape)
-    inp1_add_ct = helper.make_tensor_value_info("inp1_add_ct", TensorProto.FLOAT, shape)
+    inp1_add_ct = helper.make_tensor_value_info("inp1_add_ct", TensorProto.FLOAT, [1])
     inp2_add = helper.make_tensor_value_info("inp2_add", TensorProto.FLOAT, shape)
-    inp2_add_ct = helper.make_tensor_value_info("inp2_add_ct", TensorProto.FLOAT, shape)
+    inp2_add_ct = helper.make_tensor_value_info("inp2_add_ct", TensorProto.FLOAT, [1])
     inp1_mul = helper.make_tensor_value_info("inp1_mul", TensorProto.FLOAT, shape)
-    inp1_mul_ct = helper.make_tensor_value_info("inp1_mul_ct", TensorProto.FLOAT, shape)
+    inp1_mul_ct = helper.make_tensor_value_info("inp1_mul_ct", TensorProto.FLOAT, [1])
     inp2_mul = helper.make_tensor_value_info("inp2_mul", TensorProto.FLOAT, shape)
-    inp2_mul_ct = helper.make_tensor_value_info("inp2_mul_ct", TensorProto.FLOAT, shape)
-    outp = helper.make_tensor_value_info("outp", TensorProto.FLOAT, shape)
+    inp2_mul_ct = helper.make_tensor_value_info("inp2_mul_ct", TensorProto.FLOAT, [1])
+    eltwise_add = helper.make_tensor_value_info("eltwise_add", TensorProto.FLOAT, shape)
+    pool = helper.make_tensor_value_info("pool", TensorProto.FLOAT, [1, ch, 1, 1])
+    reshape_ct = helper.make_tensor_value_info("reshape_ct", TensorProto.INT64, [2])
+    outp = helper.make_tensor_value_info("outp", TensorProto.FLOAT, [1, ch])
 
     add1_node = helper.make_node("Add", [inp1.name, inp1_add_ct.name], [inp1_add.name])
     add2_node = helper.make_node("Add", [inp2.name, inp2_add_ct.name], [inp2_add.name])
@@ -82,10 +82,24 @@ def make_model(ch, ifmdim):
         "Mul", [inp2_add.name, inp2_mul_ct.name], [inp2_mul.name]
     )
     eltwise_add_node = helper.make_node(
-        "Add", [inp1_mul.name, inp2_mul.name], [outp.name]
+        "Add", [inp1_mul.name, inp2_mul.name], [eltwise_add.name]
+    )
+    globalavgpool_node = helper.make_node(
+        "GlobalAveragePool", [eltwise_add.name], [pool.name]
+    )
+    reshape_node = helper.make_node(
+        "Reshape", [pool.name, reshape_ct.name], [outp.name]
     )
     graph = helper.make_graph(
-        nodes=[add1_node, add2_node, mul1_node, mul2_node, eltwise_add_node],
+        nodes=[
+            add1_node,
+            add2_node,
+            mul1_node,
+            mul2_node,
+            eltwise_add_node,
+            globalavgpool_node,
+            reshape_node,
+        ],
         name="graph",
         inputs=[inp1, inp2],
         outputs=[outp],
@@ -99,6 +113,7 @@ def make_model(ch, ifmdim):
     model.set_initializer(add2_node.input[1], np.array([8.0]))
     model.set_initializer(mul1_node.input[1], np.array([3.0]))
     model.set_initializer(mul2_node.input[1], np.array([3.0]))
+    model.set_initializer(reshape_node.input[1], np.array([1, -1]))
 
     return model
 
@@ -108,7 +123,7 @@ def make_model(ch, ifmdim):
 # channels
 @pytest.mark.parametrize("ch", [64])
 # ifmdim
-@pytest.mark.parametrize("ifmdim", [-1])
+@pytest.mark.parametrize("ifmdim", [7])
 def test_convert_to_hls_layers_synthetic(ch, ifmdim, idt):
     model = make_model(ch, ifmdim)
     model.save(export_onnx_path)
@@ -118,7 +133,7 @@ def test_convert_to_hls_layers_synthetic(ch, ifmdim, idt):
     model = model.transform(FoldConstants())
     model = model.transform(GiveUniqueNodeNames())
     model = model.transform(GiveReadableTensorNames())
-    # model.save("golden.onnx")
+    model.save("golden.onnx")
     # generate test vectors of correct shape
     if ifmdim == -1:
         input_tensor_shape = (1, ch)
@@ -133,14 +148,16 @@ def test_convert_to_hls_layers_synthetic(ch, ifmdim, idt):
 
     output_dict = oxe.execute_onnx(model, input_dict, True)
     produced_sum = output_dict[model.graph.output[0].name]
-    assert (produced_sum == (3.0 * ((x1 + x2) + 15.0))).all()
+    expected_sum = np.sum(3.0 * ((x1 + x2) + 15.0), axis=(2, 3)) / (ifmdim * ifmdim)
+    assert (produced_sum.flatten() == expected_sum.flatten()).all()
 
     model = model.transform(MoveScalarLinearPastEltwiseAdd())
 
     # verify again, to check we didnt break anything
     output_dict = oxe.execute_onnx(model, input_dict, True)
     produced_sum = output_dict[model.graph.output[0].name]
-    assert (produced_sum == (3.0 * ((x1 + x2) + 15.0))).all()
+    expected_sum = np.sum(3.0 * ((x1 + x2) + 15.0), axis=(2, 3)) / (ifmdim * ifmdim)
+    assert (produced_sum.flatten() == expected_sum.flatten()).all()
 
     model = model.transform(InsertTopK())
     model = model.transform(InferShapes())
@@ -157,13 +174,16 @@ def test_convert_to_hls_layers_synthetic(ch, ifmdim, idt):
     model.set_tensor_datatype(model.graph.input[0].name, idt)
     model.set_tensor_datatype(model.graph.input[1].name, idt)
     model = model.transform(to_hls.InferAddStreamsLayer())
+    model = model.transform(to_hls.InferGlobalAccPoolLayer())
     model = model.transform(to_hls.InferLabelSelectLayer())
-
+    model.save("golden_hls.onnx")
     # check topology status
     finn_nodes = model.get_finn_nodes()
-    assert len(finn_nodes) == 2
+    assert len(finn_nodes) == 3
     add_nodes = model.get_nodes_by_op_type("AddStreams_Batch")
     assert len(add_nodes) == 1
+    pool_nodes = model.get_nodes_by_op_type("GlobalAccPool_Batch")
+    assert len(pool_nodes) == 1
     label_nodes = model.get_nodes_by_op_type("LabelSelect_Batch")
     assert len(label_nodes) == 1
 

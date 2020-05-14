@@ -26,7 +26,8 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-from onnx import helper
+from onnx import TensorProto, helper
+import numpy as np
 
 from finn.core.datatype import DataType
 from finn.transformation import Transformation
@@ -568,6 +569,74 @@ class InferAddStreamsLayer(Transformation):
                     inputDataType=idt.name,
                 )
                 graph.node.insert(node_ind, new_node)
+                # remove old node
+                graph.node.remove(node)
+                graph_modified = True
+
+        if graph_modified:
+            model = model.transform(InferShapes())
+            model = model.transform(InferDataTypes())
+        return (model, graph_modified)
+
+
+class InferGlobalAccPoolLayer(Transformation):
+    """Convert any GlobalAveragePool into a GlobalAccPool HLS layer and a scalar Mul."""
+
+    def apply(self, model):
+        graph = model.graph
+        node_ind = 0
+        graph_modified = False
+        for node in graph.node:
+            node_ind += 1
+            if node.op_type == "GlobalAveragePool":
+                in0 = node.input[0]
+                in0_shape = model.get_tensor_shape(in0)
+
+                idt = model.get_tensor_datatype(in0)
+
+                # skip conversion for layers with float input
+                if not idt.is_integer():
+                    continue
+
+                num_ch = int(in0_shape[-1])
+                vecs = in0_shape[:-1]
+                # create node with no parallelization first
+                pe = 1
+                assert (
+                    num_ch % pe == 0
+                ), "Requirement Labels divisable by PE is violated."
+
+                # create and insert HLS pool node
+                out_shape = model.get_tensor_shape(node.output[0])
+                pool_out = helper.make_tensor_value_info(
+                    model.make_new_valueinfo_name(), TensorProto.FLOAT, out_shape
+                )
+                model.graph.value_info.append(pool_out)
+                new_pool = helper.make_node(
+                    "GlobalAccPool_Batch",
+                    [in0],
+                    [pool_out.name],
+                    domain="finn",
+                    backend="fpgadataflow",
+                    NumChannels=num_ch,
+                    PE=pe,
+                    inputDataType=idt.name,
+                    numInputVectors=vecs,
+                )
+
+                mul_value = helper.make_tensor_value_info(
+                    model.make_new_valueinfo_name(), TensorProto.FLOAT, [1]
+                )
+                model.graph.value_info.append(mul_value)
+                model.set_initializer(
+                    mul_value.name, np.array(1 / (vecs[-1] * vecs[-2]))
+                )
+                new_mul = helper.make_node(
+                    "Mul", [in0, mul_value.name], [node.output[0]],
+                )
+                graph.node.insert(node_ind, new_pool)
+                node_ind += 1
+                graph.node.insert(node_ind, new_mul)
                 # remove old node
                 graph.node.remove(node)
                 graph_modified = True
