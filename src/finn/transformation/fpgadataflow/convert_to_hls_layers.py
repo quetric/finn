@@ -34,6 +34,8 @@ from finn.transformation import Transformation
 from finn.custom_op.registry import getCustomOp
 from finn.transformation.infer_shapes import InferShapes
 from finn.transformation.infer_datatypes import InferDataTypes
+import finn.core.data_layout as DataLayout
+from finn.util.onnx import nchw_to_nhwc
 
 
 class InferConvInpGen(Transformation):
@@ -544,13 +546,36 @@ class InferAddStreamsLayer(Transformation):
                     continue
 
                 idt = idt0
-                in_shape = in0_shape
 
                 # skip conversion for layers with float input
                 if not idt.is_integer():
                     continue
 
-                num_channels = int(in_shape[-1])
+                # check layout and convert if necessary
+                in0_layout = model.get_tensor_layout(in0)
+                in1_layout = model.get_tensor_layout(in1)
+                result_layout = model.get_tensor_layout(result)
+
+                if in0_layout == DataLayout.NCHW:
+                    in0 = nchw_to_nhwc(in0, model, node_ind)
+                    node_ind += 1
+                    in0_shape = model.get_tensor_shape(in0)
+
+                if in1_layout == DataLayout.NCHW:
+                    in1 = nchw_to_nhwc(in1, model, node_ind)
+                    node_ind += 1
+                    in1_shape = model.get_tensor_shape(in1)
+
+                # keep track of where we need to insert the HLS Op
+                # it has to be ahead of the output transform
+                insert_point = node_ind
+
+                if result_layout == DataLayout.NCHW:
+                    result = nchw_to_nhwc(result, model, node_ind, reverse=True)
+                    node_ind += 1
+
+                # now safe to assume num_channels is size of last dimension
+                num_channels = int(in0_shape[-1])
                 # create node with no parallelization first
                 pe = 1
                 assert (
@@ -567,8 +592,9 @@ class InferAddStreamsLayer(Transformation):
                     NumChannels=num_channels,
                     PE=pe,
                     inputDataType=idt.name,
+                    numInputVectors=in0_shape[:-1],
                 )
-                graph.node.insert(node_ind, new_node)
+                graph.node.insert(insert_point, new_node)
                 # remove old node
                 graph.node.remove(node)
                 graph_modified = True
@@ -590,6 +616,7 @@ class InferGlobalAccPoolLayer(Transformation):
             node_ind += 1
             if node.op_type == "GlobalAveragePool":
                 in0 = node.input[0]
+                result = node.output[0]
                 in0_shape = model.get_tensor_shape(in0)
 
                 idt = model.get_tensor_datatype(in0)
@@ -597,6 +624,23 @@ class InferGlobalAccPoolLayer(Transformation):
                 # skip conversion for layers with float input
                 if not idt.is_integer():
                     continue
+
+                # check layout and convert if necessary
+                in0_layout = model.get_tensor_layout(in0)
+                result_layout = model.get_tensor_layout(result)
+
+                if in0_layout == DataLayout.NCHW:
+                    in0 = nchw_to_nhwc(in0, model, node_ind)
+                    node_ind += 1
+                    in0_shape = model.get_tensor_shape(in0)
+
+                # keep track of where we need to insert the HLS Op
+                # it has to be ahead of the output transform
+                insert_point = node_ind
+
+                if result_layout == DataLayout.NCHW:
+                    result = nchw_to_nhwc(result, model, node_ind, reverse=True)
+                    node_ind += 1
 
                 num_ch = int(in0_shape[-1])
                 vecs = in0_shape[:-1]
@@ -606,16 +650,19 @@ class InferGlobalAccPoolLayer(Transformation):
                     num_ch % pe == 0
                 ), "Requirement Labels divisable by PE is violated."
 
-                # create and insert HLS pool node
-                out_shape = model.get_tensor_shape(node.output[0])
+                # create an additional tensor of the same shape and layout as result
+                out_shape = model.get_tensor_shape(result)
                 pool_out = helper.make_tensor_value_info(
                     model.make_new_valueinfo_name(), TensorProto.FLOAT, out_shape
                 )
                 model.graph.value_info.append(pool_out)
+                pool_out = pool_out.name
+                model.set_tensor_layout(pool_out, model.get_tensor_layout(result))
+
                 new_pool = helper.make_node(
                     "GlobalAccPool_Batch",
                     [in0],
-                    [pool_out.name],
+                    [pool_out],
                     domain="finn",
                     backend="fpgadataflow",
                     NumChannels=num_ch,
@@ -628,15 +675,11 @@ class InferGlobalAccPoolLayer(Transformation):
                     model.make_new_valueinfo_name(), TensorProto.FLOAT, [1]
                 )
                 model.graph.value_info.append(mul_value)
-                model.set_initializer(
-                    mul_value.name, np.array(1 / (vecs[-1] * vecs[-2]))
-                )
-                new_mul = helper.make_node(
-                    "Mul", [in0, mul_value.name], [node.output[0]],
-                )
-                graph.node.insert(node_ind, new_pool)
+                model.set_initializer(mul_value.name, np.array(1 / (vecs[1] * vecs[2])))
+                new_mul = helper.make_node("Mul", [pool_out, mul_value.name], [result],)
+                graph.node.insert(insert_point, new_pool)
+                graph.node.insert(insert_point + 1, new_mul)
                 node_ind += 1
-                graph.node.insert(node_ind, new_mul)
                 # remove old node
                 graph.node.remove(node)
                 graph_modified = True
