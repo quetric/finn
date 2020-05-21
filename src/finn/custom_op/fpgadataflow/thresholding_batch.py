@@ -48,6 +48,9 @@ from . import templates
 # output 0 is the output tensor, shape (..., NumChannels) - same as input
 # the ... here can be any shape (representing groups of vectors)
 
+# by setting Func appropriately, this function can implement
+# any channel-wise operation
+
 
 class Thresholding_Batch(HLSCustomOp):
     """Class that corresponds to finn-hls Thresholding_Batch function."""
@@ -58,6 +61,7 @@ class Thresholding_Batch(HLSCustomOp):
 
     def get_nodeattr_types(self):
         my_attrs = {
+            "Func": ("s", False, "cmp_le"),
             "PE": ("i", True, 0),
             "NumChannels": ("i", True, 0),
             # string defining memory type
@@ -279,7 +283,18 @@ class Thresholding_Batch(HLSCustomOp):
         thresholds = model.get_initializer(self.onnx_node.input[1])
 
         threshold_tensor = self.get_hls_compatible_threshold_tensor(thresholds)
-        tdt = DataType.INT32
+
+        # determine thresholds data type from range of threshold and input tensors
+        idt = self.get_input_datatype()
+        t_min = min(thresholds.min(), idt.min())
+        t_max = max(thresholds.max(), idt.max())
+        t_absmax = max(abs(t_min), abs(t_max))
+        if t_min < 0:
+            t_min = min(t_min, -t_absmax - 1)
+            tdt = DataType.get_smallest_possible(t_min)
+        else:
+            tdt = DataType.get_smallest_possible(t_max)
+
         thresholds_hls_code = numpy_to_hls_code(
             threshold_tensor, tdt, "thresholds", False, True
         )
@@ -291,6 +306,28 @@ class Thresholding_Batch(HLSCustomOp):
         if self.get_output_datatype() == DataType.BIPOLAR:
             export_odt = DataType.BINARY
         odt_hls = export_odt.get_hls_datatype_str()
+        # get desired function
+        func = self.get_nodeattr("Func")
+        if func == "cmp_le":
+            func_str = "std::less_equal"
+            start_val = export_odt.min()
+        elif func == "cmp_ge":
+            func_str = "std::greater_equal"
+            start_val = export_odt.min()
+        elif func == "add":
+            func_str = "std::plus"
+            start_val = 0
+        elif func == "mul":
+            func_str = "std::multiplies"
+            start_val = 0
+        else:
+            raise Exception(
+                """Invalid value for attribute Func! Is currently set to: {}
+            has to be set to one of the following value
+            ("cmp_le", "cmp_ge", "add", "mul")""".format(
+                    func
+                )
+            )
         f_thresh.write(
             "static ThresholdsActivation<{},{},{},{},{},{},{}> threshs \
             = ".format(
@@ -299,8 +336,8 @@ class Thresholding_Batch(HLSCustomOp):
                 threshold_tensor.shape[-1],
                 tdt_hls,
                 odt_hls,
-                export_odt.min(),
-                "std::less_equal<%s>" % tdt_hls,
+                start_val,
+                "%s<%s>" % (func_str, tdt_hls),
             )
         )
         f_thresh.write(thresholds_hls_code)
@@ -336,12 +373,7 @@ class Thresholding_Batch(HLSCustomOp):
                 not float32 as expected."""
                 expected_inp_shape = self.get_folded_input_shape()
                 reshaped_input = context[inputs].reshape(expected_inp_shape)
-                if self.get_input_datatype() == DataType.BIPOLAR:
-                    # store bipolar activations as binary
-                    reshaped_input = (reshaped_input + 1) / 2
-                    export_idt = DataType.BINARY
-                else:
-                    export_idt = self.get_input_datatype()
+                export_idt = self.get_input_datatype()
                 # make copy before saving the array
                 reshaped_input = reshaped_input.copy()
                 np.save(

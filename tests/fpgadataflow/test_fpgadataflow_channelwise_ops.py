@@ -49,11 +49,13 @@ from finn.transformation.fpgadataflow.replace_verilog_relpaths import (
 )
 
 
-def make_single_thresholding_modelwrapper(T, pe, idt, odt):
+def make_single_thresholding_modelwrapper(T, pe, idt, odt, func, vecs):
     NumChannels = T.shape[0]
 
-    inp = helper.make_tensor_value_info("inp", TensorProto.FLOAT, [1, NumChannels])
-    outp = helper.make_tensor_value_info("outp", TensorProto.FLOAT, [1, NumChannels])
+    inp = helper.make_tensor_value_info("inp", TensorProto.FLOAT, vecs + [NumChannels])
+    outp = helper.make_tensor_value_info(
+        "outp", TensorProto.FLOAT, vecs + [NumChannels]
+    )
 
     node_inp_list = ["inp", "thresh"]
 
@@ -64,9 +66,11 @@ def make_single_thresholding_modelwrapper(T, pe, idt, odt):
         domain="finn",
         backend="fpgadataflow",
         NumChannels=NumChannels,
+        Func=func,
         PE=pe,
         inputDataType=idt.name,
         outputDataType=odt.name,
+        numInputVectors=vecs,
     )
     graph = helper.make_graph(
         nodes=[Thresholding_node],
@@ -87,33 +91,34 @@ def make_single_thresholding_modelwrapper(T, pe, idt, odt):
 
 
 # activation: None or DataType
-@pytest.mark.parametrize("act", [DataType.INT4, DataType.BIPOLAR])
+@pytest.mark.parametrize("act", [DataType.INT8])
 # input datatype
-@pytest.mark.parametrize("idt", [DataType.INT16, DataType.UINT16])
+@pytest.mark.parametrize("idt", [DataType.INT4])
 # folding, -1 is maximum possible
 @pytest.mark.parametrize("nf", [-1, 2, 1])
 # number of input features
 @pytest.mark.parametrize("ich", [16])
+# vecs
+@pytest.mark.parametrize("vecs", [[1], [1, 7, 7]])
+# function
+@pytest.mark.parametrize("func", ["add", "mul"])
 # execution mode
 @pytest.mark.parametrize("exec_mode", ["cppsim", "rtlsim"])
 @pytest.mark.vivado
 @pytest.mark.slow
-def test_fpgadataflow_thresholding(idt, act, nf, ich, exec_mode):
+def test_fpgadataflow_addmul(idt, act, nf, ich, func, vecs, exec_mode):
     if nf == -1:
         nf = ich
     pe = ich // nf
     assert ich % pe == 0
 
     # generate input data
-    x = gen_finn_dt_tensor(idt, (1, ich))
+    x = gen_finn_dt_tensor(idt, tuple(vecs + [ich]))
 
     odt = act
-    n_steps = act.get_num_possible_values() - 1
-    T = np.random.randint(idt.min(), idt.max() + 1, (ich, n_steps)).astype(np.float32)
-    # provide non-decreasing thresholds
-    T = np.sort(T, axis=1)
+    C = np.random.randint(idt.min(), idt.max() + 1, (ich, 1)).astype(np.float32)
 
-    model = make_single_thresholding_modelwrapper(T, pe, idt, odt)
+    model = make_single_thresholding_modelwrapper(C, pe, idt, odt, func, vecs)
 
     if exec_mode == "cppsim":
         model = model.transform(PrepareCppSim())
@@ -132,7 +137,81 @@ def test_fpgadataflow_thresholding(idt, act, nf, ich, exec_mode):
     # package input data as dictionary
     input_dict = {"inp": x}
 
-    y = multithreshold(x, T)
+    oshape = model.get_tensor_shape("outp")
+
+    C_reshaped = np.broadcast_to(C.flatten(), x.shape)
+    if func == "add":
+        y = x + C_reshaped
+    elif func == "mul":
+        y = x * C_reshaped
+
+    y_expected = y.reshape(oshape)
+    # execute model
+    y_produced = oxe.execute_onnx(model, input_dict)["outp"]
+
+    y_produced = y_produced.reshape(y_expected.shape)
+
+    assert (y_produced == y_expected).all(), "cppsim failed"
+
+    if exec_mode == "rtlsim":
+        hls_synt_res_est = model.analysis(hls_synth_res_estimation)
+        assert "Thresholding_Batch_0" in hls_synt_res_est
+
+
+# activation: None or DataType
+@pytest.mark.parametrize("act", [DataType.INT4, DataType.BIPOLAR])
+# input datatype
+@pytest.mark.parametrize("idt", [DataType.INT16, DataType.UINT16])
+# folding, -1 is maximum possible
+@pytest.mark.parametrize("nf", [-1, 2, 1])
+# number of input features
+@pytest.mark.parametrize("ich", [16])
+# vecs
+@pytest.mark.parametrize("vecs", [[1], [1, 7, 7]])
+# function
+@pytest.mark.parametrize("func", ["cmp_le"])
+# execution mode
+@pytest.mark.parametrize("exec_mode", ["cppsim", "rtlsim"])
+@pytest.mark.vivado
+@pytest.mark.slow
+def test_fpgadataflow_thresholding(idt, act, nf, ich, func, vecs, exec_mode):
+    if nf == -1:
+        nf = ich
+    pe = ich // nf
+    assert ich % pe == 0
+
+    # generate input data
+    x = gen_finn_dt_tensor(idt, tuple(vecs + [ich]))
+
+    odt = act
+    n_steps = act.get_num_possible_values() - 1
+    T = np.random.randint(idt.min(), idt.max() + 1, (ich, n_steps)).astype(np.float32)
+    # provide non-decreasing thresholds
+    T = np.sort(T, axis=1)
+
+    model = make_single_thresholding_modelwrapper(T, pe, idt, odt, func, vecs)
+
+    if exec_mode == "cppsim":
+        model = model.transform(PrepareCppSim())
+        model = model.transform(CompileCppSim())
+        model = model.transform(SetExecMode("cppsim"))
+    elif exec_mode == "rtlsim":
+        model = model.transform(SetExecMode("rtlsim"))
+        model = model.transform(GiveUniqueNodeNames())
+        model = model.transform(PrepareIP("xc7z020clg400-1", 5))
+        model = model.transform(HLSSynthIP())
+        model = model.transform(ReplaceVerilogRelPaths())
+        model = model.transform(PrepareRTLSim())
+    else:
+        raise Exception("Unknown exec_mode")
+
+    # package input data as dictionary
+    input_dict = {"inp": x}
+
+    if len(vecs) > 1:
+        y = multithreshold(x.transpose(0, 3, 1, 2), T).transpose(0, 2, 3, 1)
+    else:
+        y = multithreshold(x, T)
     if act == DataType.BIPOLAR:
         # binary to bipolar
         y = 2 * y - 1
