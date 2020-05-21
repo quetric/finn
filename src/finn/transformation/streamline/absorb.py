@@ -282,3 +282,35 @@ class AbsorbTransposeIntoMultiThreshold(Transformation):
         if graph_modified:
             model = model.transform(InferDataTypes())
         return (model, graph_modified)
+
+
+class AbsorbConsecutiveTransposes(Transformation):
+    """Remove (Tranpose -> Transpose) patterns when the input and output
+    of the pattern have the same layout."""
+
+    def apply(self, model):
+        graph = model.graph
+        graph_modified = False
+        for n in graph.node:
+            if n.op_type == "Transpose":
+                next_node = model.find_consumer(n.output[0])
+                if next_node is not None and next_node.op_type == "Transpose":
+                    perms1 = list(get_by_name(n.attribute, "perm").ints)
+                    perms2 = list(get_by_name(next_node.attribute, "perm").ints)
+                    # TODO: find a more generic way of discovering opposite transposes
+                    if (perms1 == [0, 3, 1, 2] and perms2 == [0, 2, 3, 1]) or (
+                        perms1 == [0, 2, 3, 1] and perms2 == [0, 3, 1, 2]
+                    ):
+                        # connect next_node's consumer input to n's producer output
+                        # TODO implement this to allow for forks as producers and
+                        # joins as consumers
+                        cons = model.find_consumer(next_node.output[0])
+                        prod = model.find_producer(n.input[0])
+                        prod.output[0] = cons.input[0]
+                        # remove both transposes
+                        graph.node.remove(n)
+                        graph.node.remove(next_node)
+                        graph_modified = True
+        if graph_modified:
+            model = model.transform(InferDataTypes())
+        return (model, graph_modified)

@@ -51,6 +51,7 @@ import finn.transformation.fpgadataflow.convert_to_hls_layers as to_hls
 from finn.transformation.fpgadataflow.prepare_cppsim import PrepareCppSim
 from finn.transformation.fpgadataflow.compile_cppsim import CompileCppSim
 from finn.transformation.fpgadataflow.set_exec_mode import SetExecMode
+from finn.transformation.streamline.absorb import AbsorbConsecutiveTransposes
 
 import pytest
 
@@ -178,8 +179,9 @@ def test_convert_to_hls_layers_synthetic(ch, ifmdim, idt):
     model = model.transform(GiveReadableTensorNames())
     model = model.transform(InferDataTypes())
     model = model.transform(to_hls.InferLabelSelectLayer())
+    model = model.transform(AbsorbConsecutiveTransposes())
 
-    # model.save("golden_hls.onnx")
+    model.save("golden_hls.onnx")
     # check topology status
     finn_nodes = model.get_finn_nodes()
     assert len(finn_nodes) == 3
