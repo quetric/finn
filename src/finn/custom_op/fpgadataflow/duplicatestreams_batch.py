@@ -36,8 +36,8 @@ from onnx import TensorProto, helper
 from finn.util.data_packing import npy_to_rtlsim_input, rtlsim_output_to_npy
 
 
-class GlobalAccPool_Batch(HLSCustomOp):
-    """Class that corresponds to finn-hlslib AccPool_Batch function."""
+class DuplicateStreams_Batch(HLSCustomOp):
+    """Class that corresponds to finn-hlslib function of the same name."""
 
     def __init__(self, onnx_node):
         super().__init__(onnx_node)
@@ -73,22 +73,10 @@ class GlobalAccPool_Batch(HLSCustomOp):
         return folded_ishape
 
     def get_normal_output_shape(self):
-        ch = self.get_nodeattr("NumChannels")
-        vecs = list(self.get_nodeattr("numInputVectors"))
-        if len(vecs) == 1:
-            oshape = tuple(vecs + [ch])
-        elif len(vecs) == 3:
-            oshape = tuple([vecs[0]] + [1, 1, ch])
-        return oshape
+        return self.get_normal_input_shape()
 
     def get_folded_output_shape(self):
-        ch = self.get_nodeattr("NumChannels")
-        pe = self.get_nodeattr("PE")
-        unfolded_shape = list(self.get_normal_output_shape())
-        assert ch % pe == 0, "PE must divide NumChannels"
-        folds = int(ch / pe)
-        oshape = tuple(unfolded_shape[:-1] + [folds, pe])
-        return oshape
+        return self.get_folded_input_shape()
 
     def make_shape_compatible_op(self, model):
         exp_ishape = self.get_normal_input_shape()
@@ -97,15 +85,13 @@ class GlobalAccPool_Batch(HLSCustomOp):
         assert ishape == exp_ishape, "Unexpected input shape."
         # implement tensor with correct shape
         values = np.random.randn(*oshape).astype(np.float32)
+        split_input = np.concatenate((values, values), axis=0)
         return helper.make_node(
-            "Constant",
-            inputs=[],
-            outputs=[self.onnx_node.output[0]],
+            "Split",
+            inputs=[split_input],
+            outputs=[self.onnx_node.output[0], self.onnx_node.output[0]],
             value=helper.make_tensor(
-                name="const_tensor",
-                data_type=TensorProto.FLOAT,
-                dims=values.shape,
-                vals=values.flatten(),
+                name="const_tensor", data_type=TensorProto.FLOAT, axis=0
             ),
         )
 
@@ -142,11 +128,6 @@ class GlobalAccPool_Batch(HLSCustomOp):
                 """The required GlobalAccPool_Batch attributes do not exist."""
             )
 
-        # verify that input data is 2D
-        if len(self.get_nodeattr("numInputVectors")) != 3:
-            info_messages.append("""GlobalAccPool_Batch requires 2D data input.""")
-            raise Exception
-
         return info_messages
 
     def get_input_datatype(self):
@@ -155,15 +136,7 @@ class GlobalAccPool_Batch(HLSCustomOp):
 
     def get_output_datatype(self):
         """Returns FINN DataType of output."""
-        # determine data type from image size and input type
-        idt = DataType[self.get_nodeattr("inputDataType")]
-        vecs = list(self.get_nodeattr("numInputVectors"))
-        npixels = vecs[-1] * vecs[-2]
-        if idt.signed():
-            extreme_value = npixels * idt.min()
-        else:
-            extreme_value = npixels * idt.max()
-        return DataType.get_smallest_possible(extreme_value)
+        return DataType[self.get_nodeattr("inputDataType")]
 
     def get_instream_width(self):
         """Returns input stream width."""
@@ -180,7 +153,7 @@ class GlobalAccPool_Batch(HLSCustomOp):
         return out_width
 
     def get_number_output_values(self):
-        return np.prod(self.get_folded_output_shape()[1:-1])
+        return 2 * np.prod(self.get_folded_output_shape()[1:-1])
 
     def execute_node(self, context, graph):
         mode = self.get_nodeattr("exec_mode")
@@ -216,12 +189,17 @@ class GlobalAccPool_Batch(HLSCustomOp):
             # execute the precompiled model
             super().exec_precompiled_singlenode_model()
             # load output npy file
-            super().npy_to_dynamic_output(context)
+            super().npy_to_dynamic_outputs(context, ["output0.npy", "output1.npy"])
             assert (
                 context[node.output[0]].shape == folded_oshape
             ), "cppsim \
             did not produce expected ofolded utput shape"
+            assert (
+                context[node.output[1]].shape == folded_oshape
+            ), "cppsim \
+            did not produce expected ofolded utput shape"
             context[node.output[0]] = context[node.output[0]].reshape(*exp_oshape)
+            context[node.output[1]] = context[node.output[1]].reshape(*exp_oshape)
         elif mode == "rtlsim":
             sim = self.get_rtlsim()
             nbits = self.get_instream_width()
@@ -230,19 +208,43 @@ class GlobalAccPool_Batch(HLSCustomOp):
             )
             super().reset_rtlsim(sim)
             super().toggle_clk(sim)
-            rtlsim_output = self.rtlsim(sim, rtlsim_inp)
+            rtlsim_dict = {
+                "inputs": {"in0": rtlsim_inp},
+                "outputs": {"out0": [], "out1": []},
+            }
+            self.rtlsim_multi_io(sim, rtlsim_dict)
             odt = self.get_output_datatype()
             target_bits = odt.bitwidth()
             packed_bits = self.get_outstream_width()
-            out_npy_path = "{}/output.npy".format(code_gen_dir)
             out_shape = self.get_folded_output_shape()
+
+            out_npy_path = "{}/output0.npy".format(code_gen_dir)
             rtlsim_output_to_npy(
-                rtlsim_output, out_npy_path, odt, out_shape, packed_bits, target_bits
+                rtlsim_dict["outputs"]["out0"],
+                out_npy_path,
+                odt,
+                out_shape,
+                packed_bits,
+                target_bits,
             )
-            # load and reshape output
+            # load and reshape output 0
             output = np.load(out_npy_path)
             output = np.asarray([output], dtype=np.float32).reshape(*exp_oshape)
             context[node.output[0]] = output
+
+            out_npy_path = "{}/output1.npy".format(code_gen_dir)
+            rtlsim_output_to_npy(
+                rtlsim_dict["outputs"]["out1"],
+                out_npy_path,
+                odt,
+                out_shape,
+                packed_bits,
+                target_bits,
+            )
+            # load and reshape output 1
+            output = np.load(out_npy_path)
+            output = np.asarray([output], dtype=np.float32).reshape(*exp_oshape)
+            context[node.output[1]] = output
         else:
             raise Exception(
                 """Invalid value for attribute exec_mode! Is currently set to: {}
@@ -253,10 +255,13 @@ class GlobalAccPool_Batch(HLSCustomOp):
 
         assert (
             context[node.output[0]].shape == exp_oshape
-        ), """Output shape doesn't match expected shape."""
+        ), """Output0 shape doesn't match expected shape."""
+        assert (
+            context[node.output[1]].shape == exp_oshape
+        ), """Output1 shape doesn't match expected shape."""
 
     def global_includes(self):
-        self.code_gen_dict["$GLOBALS$"] = ['#include "maxpool.h"']
+        self.code_gen_dict["$GLOBALS$"] = ['#include "streamtools.h"']
 
     def defines(self, var):
         self.code_gen_dict["$DEFINES$"] = []
@@ -282,17 +287,16 @@ class GlobalAccPool_Batch(HLSCustomOp):
             'hls::stream<ap_uint<{}>> in0 ("in0");'.format(self.get_instream_width())
         )
         self.code_gen_dict["$STREAMDECLARATIONS$"].append(
-            'hls::stream<ap_uint<{}>> out ("out");'.format(self.get_outstream_width())
+            'hls::stream<ap_uint<{}>> out0 ("out0");'.format(self.get_outstream_width())
+        )
+        self.code_gen_dict["$STREAMDECLARATIONS$"].append(
+            'hls::stream<ap_uint<{}>> out1 ("out1");'.format(self.get_outstream_width())
         )
 
     def docompute(self):
         self.code_gen_dict["$DOCOMPUTE$"] = [
-            """AccPool_Batch<{}, {}, {}, {}, {}> (in0, out, 1);""".format(
-                self.get_normal_input_shape()[1],
-                self.get_nodeattr("NumChannels"),
-                self.get_input_datatype().get_hls_datatype_str(),
-                self.get_nodeattr("PE"),
-                self.get_output_datatype().get_hls_datatype_str(),
+            """DuplicateStreams_Batch<{}, {}> (in0, out0, out1, 1);""".format(
+                self.get_outstream_width(), self.get_number_output_values() // 2,
             )
         ]
 
@@ -304,12 +308,13 @@ class GlobalAccPool_Batch(HLSCustomOp):
         packed_hls_type = "ap_uint<%d>" % packed_bits
         elem_hls_type = dtype.get_hls_datatype_str()
         npy_type = "float"
-        npy_out = "%s/output.npy" % code_gen_dir
+        npy_out = "%s/output0.npy" % code_gen_dir
+        npy_out1 = "%s/output1.npy" % code_gen_dir
         oshape = self.get_folded_output_shape()
         oshape_cpp_str = str(oshape).replace("(", "{").replace(")", "}")
 
         self.code_gen_dict["$DATAOUTSTREAM$"] = [
-            'apintstream2npy<%s, %s, %d, %s>(out, %s, "%s");'
+            'apintstream2npy<%s, %s, %d, %s>(out0, %s, "%s");'
             % (
                 packed_hls_type,
                 elem_hls_type,
@@ -320,22 +325,37 @@ class GlobalAccPool_Batch(HLSCustomOp):
             )
         ]
 
+        self.code_gen_dict["$DATAOUTSTREAM$"] += [
+            'apintstream2npy<%s, %s, %d, %s>(out1, %s, "%s");'
+            % (
+                packed_hls_type,
+                elem_hls_type,
+                elem_bits,
+                npy_type,
+                oshape_cpp_str,
+                npy_out1,
+            )
+        ]
+
     def save_as_npy(self):
         self.code_gen_dict["$SAVEASCNPY$"] = []
 
     def blackboxfunction(self):
         self.code_gen_dict["$BLACKBOXFUNCTION$"] = [
             """void {}(hls::stream<ap_uint<{}>> &in0,
-                hls::stream<ap_uint<{}>> &out)""".format(
+                hls::stream<ap_uint<{}>> &out0,
+                hls::stream<ap_uint<{}>> &out1)""".format(
                 self.onnx_node.name,
                 self.get_instream_width(),
+                self.get_outstream_width(),
                 self.get_outstream_width(),
             )
         ]
 
     def pragmas(self):
         self.code_gen_dict["$PRAGMAS$"] = ["#pragma HLS INTERFACE axis port=in0"]
-        self.code_gen_dict["$PRAGMAS$"].append("#pragma HLS INTERFACE axis port=out")
+        self.code_gen_dict["$PRAGMAS$"].append("#pragma HLS INTERFACE axis port=out0")
+        self.code_gen_dict["$PRAGMAS$"].append("#pragma HLS INTERFACE axis port=out1")
         self.code_gen_dict["$PRAGMAS$"].append(
             "#pragma HLS INTERFACE ap_ctrl_none port=return"
         )
