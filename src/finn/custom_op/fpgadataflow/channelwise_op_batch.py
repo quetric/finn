@@ -49,10 +49,10 @@ from . import templates
 # the ... here can be any shape (representing groups of vectors)
 
 # by setting Func appropriately, this function can implement
-# any channel-wise operation
+# any channel-wise operation, including Add, Mul, Thresholding
 
 
-class Thresholding_Batch(HLSCustomOp):
+class ChannelwiseOp_Batch(HLSCustomOp):
     """Class that corresponds to finn-hls Thresholding_Batch function."""
 
     def __init__(self, onnx_node):
@@ -474,7 +474,6 @@ class Thresholding_Batch(HLSCustomOp):
         tmpl_args = self.get_template_param_values()
         # TODO: why put some template parameters into defines and not others?
         # should ImgDim be defined or just filled in here like we do now?
-        node = self.onnx_node
         ishape = self.get_folded_input_shape()
         if len(ishape) == 3:
             imgdim = 1
@@ -483,9 +482,9 @@ class Thresholding_Batch(HLSCustomOp):
         else:
             raise Exception("""Unexpeted input shape""")
         self.code_gen_dict["$DOCOMPUTE$"] = [
-            """{}<{}, NumChannels1, PE1, {}, {}>
+            """Thresholding_Batch<{}, NumChannels1, PE1, {}, {}>
             (in0, out, threshs, numReps);""".format(
-                node.op_type, imgdim, tmpl_args["TSrcI"], tmpl_args["TDstI"],
+                imgdim, tmpl_args["TSrcI"], tmpl_args["TDstI"],
             )
         ]
 

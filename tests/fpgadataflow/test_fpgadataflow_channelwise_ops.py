@@ -49,18 +49,18 @@ from finn.transformation.fpgadataflow.replace_verilog_relpaths import (
 )
 
 
-def make_single_thresholding_modelwrapper(T, pe, idt, odt, func, vecs):
-    NumChannels = T.shape[0]
+def make_modelwrapper(C, pe, idt, odt, func, vecs):
+    NumChannels = C.shape[0]
 
     inp = helper.make_tensor_value_info("inp", TensorProto.FLOAT, vecs + [NumChannels])
     outp = helper.make_tensor_value_info(
         "outp", TensorProto.FLOAT, vecs + [NumChannels]
     )
 
-    node_inp_list = ["inp", "thresh"]
+    node_inp_list = ["inp", "const"]
 
-    Thresholding_node = helper.make_node(
-        "Thresholding_Batch",
+    node = helper.make_node(
+        "ChannelwiseOp_Batch",
         node_inp_list,
         ["outp"],
         domain="finn",
@@ -72,21 +72,16 @@ def make_single_thresholding_modelwrapper(T, pe, idt, odt, func, vecs):
         outputDataType=odt.name,
         numInputVectors=vecs,
     )
-    graph = helper.make_graph(
-        nodes=[Thresholding_node],
-        name="thresholding_graph",
-        inputs=[inp],
-        outputs=[outp],
-    )
+    graph = helper.make_graph(nodes=[node], name="graph", inputs=[inp], outputs=[outp],)
 
-    model = helper.make_model(graph, producer_name="thresholding-model")
+    model = helper.make_model(graph, producer_name="model")
     model = ModelWrapper(model)
 
     model.set_tensor_datatype("inp", idt)
     model.set_tensor_datatype("outp", odt)
 
-    model.set_tensor_datatype("thresh", idt)
-    model.set_initializer("thresh", T)
+    model.set_tensor_datatype("const", idt)
+    model.set_initializer("const", C)
     return model
 
 
@@ -118,7 +113,7 @@ def test_fpgadataflow_addmul(idt, act, nf, ich, func, vecs, exec_mode):
     odt = act
     C = np.random.randint(idt.min(), idt.max() + 1, (ich, 1)).astype(np.float32)
 
-    model = make_single_thresholding_modelwrapper(C, pe, idt, odt, func, vecs)
+    model = make_modelwrapper(C, pe, idt, odt, func, vecs)
 
     if exec_mode == "cppsim":
         model = model.transform(PrepareCppSim())
@@ -189,7 +184,7 @@ def test_fpgadataflow_thresholding(idt, act, nf, ich, func, vecs, exec_mode):
     # provide non-decreasing thresholds
     T = np.sort(T, axis=1)
 
-    model = make_single_thresholding_modelwrapper(T, pe, idt, odt, func, vecs)
+    model = make_modelwrapper(T, pe, idt, odt, func, vecs)
 
     if exec_mode == "cppsim":
         model = model.transform(PrepareCppSim())
@@ -230,4 +225,4 @@ def test_fpgadataflow_thresholding(idt, act, nf, ich, func, vecs, exec_mode):
 
     if exec_mode == "rtlsim":
         hls_synt_res_est = model.analysis(hls_synth_res_estimation)
-        assert "Thresholding_Batch_0" in hls_synt_res_est
+        assert "ChannelwiseOp_Batch_0" in hls_synt_res_est
