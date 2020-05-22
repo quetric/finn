@@ -46,7 +46,11 @@ class AbsorbAddIntoMultiThreshold(Transformation):
         graph_modified = False
         for n in graph.node:
             node_ind += 1
-            if n.op_type == "Add":
+            if (
+                n.op_type == "Add"
+                and not model.is_fork_node(n)
+                and not model.is_join_node(n)
+            ):
                 consumer = model.find_consumer(n.output[0])
                 if consumer is not None and consumer.op_type == "MultiThreshold":
                     add_weight_name = n.input[1]
@@ -83,7 +87,11 @@ class AbsorbMulIntoMultiThreshold(Transformation):
         graph_modified = False
         for n in graph.node:
             node_ind += 1
-            if n.op_type == "Mul":
+            if (
+                n.op_type == "Mul"
+                and not model.is_fork_node(n)
+                and not model.is_join_node(n)
+            ):
                 mul_weight_name = n.input[1]
                 A = model.get_initializer(mul_weight_name)
                 assert A is not None, "Initializer for mul weights is not set."
@@ -279,6 +287,38 @@ class AbsorbTransposeIntoMultiThreshold(Transformation):
                                 model.set_tensor_shape(mt_cand.output[0], mt_ishape)
                                 graph.node.remove(n)
                                 graph_modified = True
+        if graph_modified:
+            model = model.transform(InferDataTypes())
+        return (model, graph_modified)
+
+
+class AbsorbConsecutiveTransposes(Transformation):
+    """Remove (Tranpose -> Transpose) patterns when the input and output
+    of the pattern have the same layout."""
+
+    def apply(self, model):
+        graph = model.graph
+        graph_modified = False
+        for n in graph.node:
+            if n.op_type == "Transpose":
+                next_node = model.find_consumer(n.output[0])
+                if next_node is not None and next_node.op_type == "Transpose":
+                    perms1 = list(get_by_name(n.attribute, "perm").ints)
+                    perms2 = list(get_by_name(next_node.attribute, "perm").ints)
+                    # TODO: find a more generic way of discovering opposite transposes
+                    if (perms1 == [0, 3, 1, 2] and perms2 == [0, 2, 3, 1]) or (
+                        perms1 == [0, 2, 3, 1] and perms2 == [0, 3, 1, 2]
+                    ):
+                        # connect next_node's consumer input to n's producer output
+                        # TODO implement this to allow for forks as producers and
+                        # joins as consumers
+                        cons = model.find_consumer(next_node.output[0])
+                        prod = model.find_producer(n.input[0])
+                        prod.output[0] = cons.input[0]
+                        # remove both transposes
+                        graph.node.remove(n)
+                        graph.node.remove(next_node)
+                        graph_modified = True
         if graph_modified:
             model = model.transform(InferDataTypes())
         return (model, graph_modified)
