@@ -205,7 +205,7 @@ def test_convert_to_hls_layers_synthetic(ch, ifmdim, idt):
     model = model.transform(to_hls.InferLabelSelectLayer())
     model = model.transform(AbsorbConsecutiveTransposes())
 
-    model.save("golden_hls.onnx")
+    # model.save("golden_hls.onnx")
     # check topology status
     finn_nodes = model.get_finn_nodes()
     assert len(finn_nodes) == 5

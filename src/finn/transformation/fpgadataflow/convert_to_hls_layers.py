@@ -423,10 +423,21 @@ class InferThresholdingLayer(Transformation):
                 if not idt.is_integer():
                     continue
 
-                # skip conversion if input is not NHWC or NC
+                # check layout of inputs/outputs, and convert if needed
+                # check layout and convert if necessary
                 thl_in_layout = model.get_tensor_layout(thl_input)
-                if thl_in_layout != DataLayout.NHWC and thl_in_layout != DataLayout.NC:
-                    continue
+                if thl_in_layout == DataLayout.NCHW:
+                    thl_input = nchw_to_nhwc(thl_input, model, node_ind)
+                    node_ind += 1
+                    thl_in_shape = model.get_tensor_shape(thl_input)
+
+                # keep track of where we need to insert the HLS Op
+                # it has to be ahead of the output transform
+                insert_point = node_ind
+                thl_output_layout = model.get_tensor_layout(thl_output)
+                if thl_output_layout == DataLayout.NCHW:
+                    thl_output = nchw_to_nhwc(thl_output, model, node_ind, reverse=True)
+                    node_ind += 1
 
                 # now safe to assume number of channels is in last dimension
                 ifc = int(thl_in_shape[-1])
@@ -448,7 +459,7 @@ class InferThresholdingLayer(Transformation):
                     outputDataType=odt.name,
                     numInputVectors=list(thl_in_shape[:-1]),
                 )
-                graph.node.insert(node_ind, new_node)
+                graph.node.insert(insert_point, new_node)
                 # remove old node
                 graph.node.remove(node)
                 graph_modified = True
