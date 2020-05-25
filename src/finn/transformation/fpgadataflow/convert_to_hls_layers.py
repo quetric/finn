@@ -36,6 +36,7 @@ from finn.transformation.infer_shapes import InferShapes
 from finn.transformation.infer_datatypes import InferDataTypes
 import finn.core.data_layout as DataLayout
 from finn.util.onnx import nchw_to_nhwc
+from finn.util.basic import get_by_name
 
 
 class InferConvInpGen(Transformation):
@@ -100,37 +101,62 @@ class InferStreamingMaxPool(Transformation):
         graph_modified = False
         for n in graph.node:
             node_ind += 1
-            if n.op_type == "MaxPoolNHWC":
+            if n.op_type == "MaxPoolNHWC" or n.op_type == "MaxPool":
                 mp_input = n.input[0]
                 mp_output = n.output[0]
                 mp_in_shape = model.get_tensor_shape(mp_input)
                 # mp_out_shape = model.get_tensor_shape(mp_output)
                 dt = model.get_tensor_datatype(mp_input)
-                mp_inst = getCustomOp(n)
-                # stride = mp_inst.get_nodeattr("strides")[0]
-                k = mp_inst.get_nodeattr("kernel_shape")[0]
-                # pad = mp_inst.get_nodeattr("pads")[0]
+
+                if n.op_type == "MaxPoolNHWC":
+                    mp_inst = getCustomOp(n)
+                    # stride = mp_inst.get_nodeattr("strides")[0]
+                    k = mp_inst.get_nodeattr("kernel_shape")[0]
+                    # pad = mp_inst.get_nodeattr("pads")[0]
+                else:
+                    k = get_by_name(n.attribute, "kernel_shape").ints[0]
+
+                # regardless of layout, ifmdim is in mp_in_shape[2]
+                # check k divides ifm_dim evenly (hw limitation)
+                ifm_dim = mp_in_shape[2]
+                if ifm_dim % k != 0:
+                    continue
+
+                # check layout of inputs/outputs, and convert if needed
+                # check layout and convert if necessary
+                mp_in_layout = model.get_tensor_layout(mp_input)
+                if mp_in_layout == DataLayout.NCHW:
+                    mp_input = nchw_to_nhwc(mp_input, model, node_ind)
+                    node_ind += 1
+                    mp_in_shape = model.get_tensor_shape(mp_input)
+
+                # keep track of where we need to insert the HLS Op
+                # it has to be ahead of the output transform
+                insert_point = node_ind
+                mp_output_layout = model.get_tensor_layout(mp_output)
+                if mp_output_layout == DataLayout.NCHW:
+                    mp_output = nchw_to_nhwc(mp_output, model, node_ind, reverse=True)
+                    node_ind += 1
+
+                # now safe to get channels from last dimension
                 ifm_ch = mp_in_shape[-1]
-                ifm_dim = mp_in_shape[1]
-                # ofm_dim = mp_out_shape[1]
-                if ifm_dim % k == 0:
-                    # create equivalent StreamingMaxPool_Batch node
-                    # TODO support non-k strides
-                    new_node = helper.make_node(
-                        "StreamingMaxPool_Batch",
-                        [mp_input],
-                        [mp_output],
-                        domain="finn",
-                        backend="fpgadataflow",
-                        PoolDim=k,
-                        NumChannels=ifm_ch,
-                        ImgDim=ifm_dim,
-                        dataType=dt.name,
-                    )
-                    graph.node.insert(node_ind, new_node)
-                    # remove old nodes
-                    graph.node.remove(n)
-                    graph_modified = True
+                # create equivalent StreamingMaxPool_Batch node
+                # TODO support non-k strides
+                new_node = helper.make_node(
+                    "StreamingMaxPool_Batch",
+                    [mp_input],
+                    [mp_output],
+                    domain="finn",
+                    backend="fpgadataflow",
+                    PoolDim=k,
+                    NumChannels=ifm_ch,
+                    ImgDim=ifm_dim,
+                    dataType=dt.name,
+                )
+                graph.node.insert(insert_point, new_node)
+                # remove old nodes
+                graph.node.remove(n)
+                graph_modified = True
         if graph_modified:
             model = model.transform(InferShapes())
             model = model.transform(InferDataTypes())
