@@ -36,6 +36,7 @@ from finn.transformation.infer_shapes import InferShapes
 from finn.transformation.infer_datatypes import InferDataTypes
 import finn.core.data_layout as DataLayout
 from finn.util.onnx import nchw_to_nhwc
+from finn.util.basic import get_by_name
 
 
 class InferConvInpGen(Transformation):
@@ -100,37 +101,62 @@ class InferStreamingMaxPool(Transformation):
         graph_modified = False
         for n in graph.node:
             node_ind += 1
-            if n.op_type == "MaxPoolNHWC":
+            if n.op_type == "MaxPoolNHWC" or n.op_type == "MaxPool":
                 mp_input = n.input[0]
                 mp_output = n.output[0]
                 mp_in_shape = model.get_tensor_shape(mp_input)
                 # mp_out_shape = model.get_tensor_shape(mp_output)
                 dt = model.get_tensor_datatype(mp_input)
-                mp_inst = getCustomOp(n)
-                # stride = mp_inst.get_nodeattr("strides")[0]
-                k = mp_inst.get_nodeattr("kernel_shape")[0]
-                # pad = mp_inst.get_nodeattr("pads")[0]
+
+                if n.op_type == "MaxPoolNHWC":
+                    mp_inst = getCustomOp(n)
+                    # stride = mp_inst.get_nodeattr("strides")[0]
+                    k = mp_inst.get_nodeattr("kernel_shape")[0]
+                    # pad = mp_inst.get_nodeattr("pads")[0]
+                else:
+                    k = get_by_name(n.attribute, "kernel_shape").ints[0]
+
+                # regardless of layout, ifmdim is in mp_in_shape[2]
+                # check k divides ifm_dim evenly (hw limitation)
+                ifm_dim = mp_in_shape[2]
+                if ifm_dim % k != 0:
+                    continue
+
+                # check layout of inputs/outputs, and convert if needed
+                # check layout and convert if necessary
+                mp_in_layout = model.get_tensor_layout(mp_input)
+                if mp_in_layout == DataLayout.NCHW:
+                    mp_input = nchw_to_nhwc(mp_input, model, node_ind)
+                    node_ind += 1
+                    mp_in_shape = model.get_tensor_shape(mp_input)
+
+                # keep track of where we need to insert the HLS Op
+                # it has to be ahead of the output transform
+                insert_point = node_ind
+                mp_output_layout = model.get_tensor_layout(mp_output)
+                if mp_output_layout == DataLayout.NCHW:
+                    mp_output = nchw_to_nhwc(mp_output, model, node_ind, reverse=True)
+                    node_ind += 1
+
+                # now safe to get channels from last dimension
                 ifm_ch = mp_in_shape[-1]
-                ifm_dim = mp_in_shape[1]
-                # ofm_dim = mp_out_shape[1]
-                if ifm_dim % k == 0:
-                    # create equivalent StreamingMaxPool_Batch node
-                    # TODO support non-k strides
-                    new_node = helper.make_node(
-                        "StreamingMaxPool_Batch",
-                        [mp_input],
-                        [mp_output],
-                        domain="finn",
-                        backend="fpgadataflow",
-                        PoolDim=k,
-                        NumChannels=ifm_ch,
-                        ImgDim=ifm_dim,
-                        dataType=dt.name,
-                    )
-                    graph.node.insert(node_ind, new_node)
-                    # remove old nodes
-                    graph.node.remove(n)
-                    graph_modified = True
+                # create equivalent StreamingMaxPool_Batch node
+                # TODO support non-k strides
+                new_node = helper.make_node(
+                    "StreamingMaxPool_Batch",
+                    [mp_input],
+                    [mp_output],
+                    domain="finn",
+                    backend="fpgadataflow",
+                    PoolDim=k,
+                    NumChannels=ifm_ch,
+                    ImgDim=ifm_dim,
+                    dataType=dt.name,
+                )
+                graph.node.insert(insert_point, new_node)
+                # remove old nodes
+                graph.node.remove(n)
+                graph_modified = True
         if graph_modified:
             model = model.transform(InferShapes())
             model = model.transform(InferDataTypes())
@@ -423,10 +449,21 @@ class InferThresholdingLayer(Transformation):
                 if not idt.is_integer():
                     continue
 
-                # skip conversion if input is not NHWC or NC
+                # check layout of inputs/outputs, and convert if needed
+                # check layout and convert if necessary
                 thl_in_layout = model.get_tensor_layout(thl_input)
-                if thl_in_layout != DataLayout.NHWC and thl_in_layout != DataLayout.NC:
-                    continue
+                if thl_in_layout == DataLayout.NCHW:
+                    thl_input = nchw_to_nhwc(thl_input, model, node_ind)
+                    node_ind += 1
+                    thl_in_shape = model.get_tensor_shape(thl_input)
+
+                # keep track of where we need to insert the HLS Op
+                # it has to be ahead of the output transform
+                insert_point = node_ind
+                thl_output_layout = model.get_tensor_layout(thl_output)
+                if thl_output_layout == DataLayout.NCHW:
+                    thl_output = nchw_to_nhwc(thl_output, model, node_ind, reverse=True)
+                    node_ind += 1
 
                 # now safe to assume number of channels is in last dimension
                 ifc = int(thl_in_shape[-1])
@@ -437,7 +474,7 @@ class InferThresholdingLayer(Transformation):
                 odt = model.get_tensor_datatype(thl_output)
                 # create and insert new StreamingFCLayer node
                 new_node = helper.make_node(
-                    "Thresholding_Batch",
+                    "ChannelwiseOp_Batch",
                     [thl_input, thl_threshold],
                     [thl_output],
                     domain="finn",
@@ -448,7 +485,7 @@ class InferThresholdingLayer(Transformation):
                     outputDataType=odt.name,
                     numInputVectors=list(thl_in_shape[:-1]),
                 )
-                graph.node.insert(node_ind, new_node)
+                graph.node.insert(insert_point, new_node)
                 # remove old node
                 graph.node.remove(node)
                 graph_modified = True
@@ -749,6 +786,116 @@ class InferDuplicateStreamsLayer(Transformation):
                 successors[0].input[0] = dup0
                 successors[1].input[0] = dup1
 
+                # remove old node
+                graph.node.remove(node)
+                graph_modified = True
+
+        if graph_modified:
+            model = model.transform(InferShapes())
+            model = model.transform(InferDataTypes())
+        return (model, graph_modified)
+
+
+class InferChannelwiseLinearLayer(Transformation):
+    """Convert any channel-wise Add/Mul into a HLS layer."""
+
+    def apply(self, model):
+        graph = model.graph
+        node_ind = 0
+        graph_modified = False
+        for node in graph.node:
+            node_ind += 1
+            if node.op_type == "Add" or node.op_type == "Mul":
+                ll_input = node.input[0]
+                ll_output = node.output[0]
+                ll_in_shape = model.get_tensor_shape(ll_input)
+                # check that:
+                # input 1 is an initializer
+                # with shape (ch, 1)
+                # and initializer is integers
+                ll_const = node.input[1]
+                if ll_const is not None:
+                    ll_cinit = model.get_initializer(ll_const)
+                else:
+                    continue
+
+                ll_cinit_shape = list(ll_cinit.shape)
+                # get number of channels from input
+                ll_in_layout = model.get_tensor_layout(ll_input)
+                if ll_in_layout == DataLayout.NHWC or ll_in_layout == DataLayout.NC:
+                    ch = ll_in_shape[-1]
+                elif ll_in_layout == DataLayout.NCHW:
+                    ch = ll_in_shape[1]
+                else:
+                    continue
+
+                # check if the shape of initializer is compatible with
+                # number of channels, e.g. (ch,1) or (ch)
+                # TODO: verify plausible shapes
+                if np.prod(ll_cinit_shape) != ch:
+                    continue
+
+                # check initializer contains integers as floats
+                if not (ll_cinit.astype(np.int32) == ll_cinit).all():
+                    continue
+
+                # all initializer conditions are met
+                # check inputs
+                idt = model.get_tensor_datatype(ll_input)
+
+                # skip conversion for layers with float input
+                if not idt.is_integer():
+                    continue
+
+                # check layout of inputs/outputs, and convert if needed
+                # check layout and convert if necessary
+                if ll_in_layout == DataLayout.NCHW:
+                    ll_input = nchw_to_nhwc(ll_input, model, node_ind)
+                    node_ind += 1
+                    ll_in_shape = model.get_tensor_shape(ll_input)
+
+                # keep track of where we need to insert the HLS Op
+                # it has to be ahead of the output transform
+                insert_point = node_ind
+                ll_output_layout = model.get_tensor_layout(ll_output)
+                if ll_output_layout == DataLayout.NCHW:
+                    ll_output = nchw_to_nhwc(ll_output, model, node_ind, reverse=True)
+                    node_ind += 1
+
+                # create node with no parallelization first
+                pe = 1
+                assert ch % pe == 0, "Requirement IFC divisable by PE is violated."
+
+                # set function and determine output data type
+                if node.op_type == "Add":
+                    func = "add"
+                    if idt.signed():
+                        odt = DataType.get_smallest_possible(2 * idt.min())
+                    else:
+                        odt = DataType.get_smallest_possible(2 * idt.max())
+                elif node.op_type == "Mul":
+                    func = "mul"
+                    if idt.signed():
+                        odt = DataType.get_smallest_possible(abs(idt.min()) * idt.min())
+                    else:
+                        odt = DataType.get_smallest_possible(idt.max() * idt.max())
+                # reshape initializer to (ch,1)
+                model.set_initializer(ll_const, ll_cinit.reshape(ch, 1))
+                # create and insert node
+                new_node = helper.make_node(
+                    "ChannelwiseOp_Batch",
+                    [ll_input, ll_const],
+                    [ll_output],
+                    domain="finn",
+                    backend="fpgadataflow",
+                    Func=func,
+                    NumChannels=ch,
+                    PE=pe,
+                    inputDataType=idt.name,
+                    outputDataType=odt.name,
+                    numInputVectors=list(ll_in_shape[:-1]),
+                )
+                graph.node.insert(insert_point, new_node)
                 # remove old node
                 graph.node.remove(node)
                 graph_modified = True
