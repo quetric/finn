@@ -474,7 +474,7 @@ class InferThresholdingLayer(Transformation):
                 odt = model.get_tensor_datatype(thl_output)
                 # create and insert new StreamingFCLayer node
                 new_node = helper.make_node(
-                    "ChannelwiseOp_Batch",
+                    "Thresholding_Batch",
                     [thl_input, thl_threshold],
                     [thl_output],
                     domain="finn",
