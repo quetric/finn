@@ -34,7 +34,6 @@ import numpy as np
 from onnx import TensorProto, helper
 from finn.core.datatype import DataType
 from finn.custom_op.fpgadataflow import HLSCustomOp
-from finn.util.basic import interleave_matrix_outer_dim_from_partitions
 from finn.util.data_packing import (
     npy_to_rtlsim_input,
     numpy_to_hls_code,
@@ -83,9 +82,9 @@ class ChannelwiseOp_Batch(HLSCustomOp):
 
     def calc_tmem(self):
         """Calculates and returns TMEM."""
-        mh = self.get_nodeattr("NumChannels")
+        chn = self.get_nodeattr("NumChannels")
         pe = self.get_nodeattr("PE")
-        return mh // pe
+        return chn // pe
 
     def make_shape_compatible_op(self, model):
         oshape = self.get_normal_output_shape()
@@ -232,37 +231,38 @@ class ChannelwiseOp_Batch(HLSCustomOp):
 
         return ret
 
-    def get_hls_compatible_threshold_tensor(self, orig_thres_matrix):
+    def get_hls_compatible_parameter_tensor(self, orig_param_vector):
         """Convert the original numpy weight matrix orig_weight_matrix into
         a form suitable for passing to the hlslib call:
-        * ensure MH % PE == 0
-        * for unsigned inputs, ensure thresholds are positive
+        * ensure chn % PE == 0
         * interleave rows between PEs
-        * reshape into (PE, TMEM, n_thres_steps) and return
+        * reshape into (PE, TMEM) and return
         """
-        mh = self.get_nodeattr("NumChannels")
+        chn = self.get_nodeattr("NumChannels")
         pe = self.get_nodeattr("PE")
-        tmem = mh // pe
-        assert mh % pe == 0, "Requirement NumChannels divisable by PE is violated."
+        tmem = chn // pe
+        assert chn % pe == 0, "Requirement NumChannels divisable by PE is violated."
         assert (
-            orig_thres_matrix.ndim == 2
-        ), """Threshold matrix dimension is
-        not as expected (2)."""
-        n_thres_steps = orig_thres_matrix.shape[1]
-        if not self.get_input_datatype().signed():
-            # ensure all thresholds are nonnegative
-            assert (orig_thres_matrix >= 0).all()
+            orig_param_vector.ndim == 1
+        ), """Parameter vector dimension is {}.
+        Expected dimension: 1.""".format(
+            orig_param_vector.ndim
+        )
+
+        # if not self.get_input_datatype().signed():
+        #     # ensure all thresholds are nonnegative
+        #     assert (orig_param_vector >= 0).all()
+
         # ensure all thresholds are integer
-        assert (orig_thres_matrix.astype(np.int32) == orig_thres_matrix).all()
-        ret = orig_thres_matrix
-        # ensure channels = mh , duplicating if necessary
-        if ret.shape[0] == 1:
-            ret = np.tile(ret, (mh, 1))
+        assert (orig_param_vector.astype(np.int32) == orig_param_vector).all()
+        ret = orig_param_vector
+
         assert (
-            ret.shape[0] == mh
-        ), "Channels of threshold matrix are not as expected (mh)"
+            ret.shape[0] == chn
+        ), "Cardinality of parameter vector is not as expected (chn)"
+
         # distribute rows between PEs
-        ret = interleave_matrix_outer_dim_from_partitions(ret, pe)
+        ret = ret.reshape(tmem, pe).transpose()
         assert (
             ret.shape[0] == pe
         ), """First dimension after distribution of the
@@ -271,36 +271,38 @@ class ChannelwiseOp_Batch(HLSCustomOp):
             ret.shape[1] == tmem
         ), """Second dimension after distribution of the
         rows between PEs is not as expected (tmem)"""
-        assert (
-            ret.shape[2] == n_thres_steps
-        ), """Third dimension after distribution of the
-        rows between PEs is not as expected (n_thres_steps)"""
-        return ret.reshape(1, pe, tmem, n_thres_steps)
+
+        return ret.reshape(1, pe, tmem)
 
     def generate_params(self, model, path):
         code_gen_dir = path
-        # save thresholds in thresh.h
-        thresholds = model.get_initializer(self.onnx_node.input[1])
+        # save thresholds in params.h
+        parameters = model.get_initializer(self.onnx_node.input[1])
 
-        threshold_tensor = self.get_hls_compatible_threshold_tensor(thresholds)
+        parameter_tensor = self.get_hls_compatible_parameter_tensor(parameters)
 
-        # determine thresholds data type from range of threshold and input tensors
-        idt = self.get_input_datatype()
-        t_min = min(thresholds.min(), idt.min())
-        t_max = max(thresholds.max(), idt.max())
-        t_absmax = max(abs(t_min), abs(t_max))
-        if t_min < 0:
-            t_min = min(t_min, -t_absmax - 1)
-            tdt = DataType.get_smallest_possible(t_min)
+        # determine parameters data type from range of threshold and input tensors
+        p_min = parameters.min()
+        p_max = parameters.max()
+        p_absmax = max(abs(p_min), abs(p_max))
+        if p_min < 0:
+            p_min = min(p_min, -p_absmax - 1)
+            pdt = DataType.get_smallest_possible(p_min)
         else:
-            tdt = DataType.get_smallest_possible(t_max)
+            pdt = DataType.get_smallest_possible(p_max)
 
-        thresholds_hls_code = numpy_to_hls_code(
-            threshold_tensor, tdt, "thresholds", False, True
+        parameters_hls_code = numpy_to_hls_code(
+            parameter_tensor, pdt, "parameters", False, True
         )
-        # write thresholds into thresh.h
-        f_thresh = open("{}/thresh.h".format(code_gen_dir), "w")
-        tdt_hls = tdt.get_hls_datatype_str()
+        # get input data type
+        export_idt = self.get_input_datatype()
+        if self.get_input_datatype() == DataType.BIPOLAR:
+            export_idt = DataType.BINARY
+        idt_hls = export_idt.get_hls_datatype_str()
+
+        # write parameters into params.h
+        f_params = open("{}/params.h".format(code_gen_dir), "w")
+        pdt_hls = pdt.get_hls_datatype_str()
         # use binary to export bipolar activations
         export_odt = self.get_output_datatype()
         if self.get_output_datatype() == DataType.BIPOLAR:
@@ -310,16 +312,12 @@ class ChannelwiseOp_Batch(HLSCustomOp):
         func = self.get_nodeattr("Func")
         if func == "cmp_le":
             func_str = "std::less_equal"
-            start_val = export_odt.min()
         elif func == "cmp_ge":
             func_str = "std::greater_equal"
-            start_val = export_odt.min()
         elif func == "add":
             func_str = "std::plus"
-            start_val = 0
         elif func == "mul":
             func_str = "std::multiplies"
-            start_val = 0
         else:
             raise Exception(
                 """Invalid value for attribute Func! Is currently set to: {}
@@ -328,20 +326,19 @@ class ChannelwiseOp_Batch(HLSCustomOp):
                     func
                 )
             )
-        f_thresh.write(
-            "static ThresholdsActivation<{},{},{},{},{},{},{}> threshs \
+        f_params.write(
+            "static ChannelWiseOperation<{},{},{},{},{},{}> threshs \
             = ".format(
                 self.calc_tmem(),
                 self.get_nodeattr("PE"),
-                threshold_tensor.shape[-1],
-                tdt_hls,
+                idt_hls,
+                pdt_hls,
                 odt_hls,
-                start_val,
-                "%s<%s>" % (func_str, tdt_hls),
+                "%s<%s>" % (func_str, odt_hls),
             )
         )
-        f_thresh.write(thresholds_hls_code)
-        f_thresh.close()
+        f_params.write(parameters_hls_code)
+        f_params.close()
 
     def execute_node(self, context, graph):
         mode = self.get_nodeattr("exec_mode")
@@ -381,7 +378,7 @@ class ChannelwiseOp_Batch(HLSCustomOp):
                     reshaped_input,
                 )
             elif in_ind > 2:
-                raise Exception("Unexpected input found for StreamingFCLayer")
+                raise Exception("Unexpected input found for ChannelwiseOp_Batch")
             in_ind += 1
 
         if mode == "cppsim":
@@ -433,14 +430,14 @@ class ChannelwiseOp_Batch(HLSCustomOp):
 
     def global_includes(self):
         self.code_gen_dict["$GLOBALS$"] = ['#include "activations.hpp"']
-        self.code_gen_dict["$GLOBALS$"] += ['#include "thresh.h"']
+        self.code_gen_dict["$GLOBALS$"] += ['#include "params.h"']
 
     # TODO check and add whatever missing
     def defines(self, var):
         numInputVectors = list(self.get_nodeattr("numInputVectors"))
         numReps = numInputVectors[0]
         self.code_gen_dict["$DEFINES$"] = [
-            """#define NumChannels1 {}\n #define PE1 {}\n #define numReps {}""".format(
+            """#define NumChannels1 {}\n#define PE1 {}\n#define numReps {}""".format(
                 self.get_nodeattr("NumChannels"), self.get_nodeattr("PE"), numReps,
             )
         ]
@@ -542,16 +539,17 @@ class ChannelwiseOp_Batch(HLSCustomOp):
         # dimensions (dims 1 and 3)
         self.code_gen_dict["$PRAGMAS$"].append(
             (
-                "#pragma HLS ARRAY_PARTITION variable=threshs.m_thresholds "
+                "#pragma HLS ARRAY_PARTITION variable=threshs.parameters "
                 "complete dim=1"
             )
         )
-        self.code_gen_dict["$PRAGMAS$"].append(
-            (
-                "#pragma HLS ARRAY_PARTITION variable=threshs.m_thresholds "
-                "complete dim=3"
-            )
-        )
+        # self.code_gen_dict["$PRAGMAS$"].append(
+        #     (
+        #         "#pragma HLS ARRAY_PARTITION variable=threshs.parameters "
+        #         "complete dim=3"
+        #     )
+        # )
+
         # set resource type
         ram_style = self.get_nodeattr("ram_style")
         pe = self.get_nodeattr("PE")
@@ -562,14 +560,14 @@ class ChannelwiseOp_Batch(HLSCustomOp):
             if ram_style == "distributed":
                 self.code_gen_dict["$PRAGMAS$"].append(
                     (
-                        "#pragma HLS RESOURCE variable=threshs.m_thresholds "
+                        "#pragma HLS RESOURCE variable=threshs.parameters "
                         "core=ROM_2P_LUTRAM"
                     )
                 )
             elif ram_style == "block":
                 self.code_gen_dict["$PRAGMAS$"].append(
                     (
-                        "#pragma HLS RESOURCE variable=threshs.m_thresholds "
+                        "#pragma HLS RESOURCE variable=threshs.parameters "
                         "core=ROM_2P_BRAM"
                     )
                 )

@@ -879,8 +879,7 @@ class InferChannelwiseLinearLayer(Transformation):
                         odt = DataType.get_smallest_possible(abs(idt.min()) * idt.min())
                     else:
                         odt = DataType.get_smallest_possible(idt.max() * idt.max())
-                # reshape initializer to (ch,1)
-                model.set_initializer(ll_const, ll_cinit.reshape(ch, 1))
+                model.set_initializer(ll_const, ll_cinit.reshape(ch))
                 # create and insert node
                 new_node = helper.make_node(
                     "ChannelwiseOp_Batch",
