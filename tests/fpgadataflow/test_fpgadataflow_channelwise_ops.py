@@ -35,7 +35,6 @@ import finn.core.onnx_exec as oxe
 from finn.analysis.fpgadataflow.hls_synth_res_estimation import hls_synth_res_estimation
 from finn.core.datatype import DataType
 from finn.core.modelwrapper import ModelWrapper
-from finn.custom_op.multithreshold import multithreshold
 from finn.transformation.fpgadataflow.prepare_ip import PrepareIP
 from finn.transformation.fpgadataflow.prepare_cppsim import PrepareCppSim
 from finn.transformation.fpgadataflow.compile_cppsim import CompileCppSim
@@ -111,7 +110,7 @@ def test_fpgadataflow_addmul(idt, act, nf, ich, func, vecs, exec_mode):
     x = gen_finn_dt_tensor(idt, tuple(vecs + [ich]))
 
     odt = act
-    C = np.random.randint(idt.min(), idt.max() + 1, (ich, 1)).astype(np.float32)
+    C = np.random.randint(idt.min(), idt.max() + 1, ich).astype(np.float32)
 
     model = make_modelwrapper(C, pe, idt, odt, func, vecs)
 
@@ -140,81 +139,6 @@ def test_fpgadataflow_addmul(idt, act, nf, ich, func, vecs, exec_mode):
     elif func == "mul":
         y = x * C_reshaped
 
-    y_expected = y.reshape(oshape)
-    # execute model
-    y_produced = oxe.execute_onnx(model, input_dict)["outp"]
-
-    y_produced = y_produced.reshape(y_expected.shape)
-
-    assert (y_produced == y_expected).all(), "cppsim failed"
-
-    if exec_mode == "rtlsim":
-        hls_synt_res_est = model.analysis(hls_synth_res_estimation)
-        assert "Thresholding_Batch_0" in hls_synt_res_est
-
-
-# activation: None or DataType
-@pytest.mark.parametrize("act", [DataType.INT4, DataType.BIPOLAR])
-# input datatype
-@pytest.mark.parametrize("idt", [DataType.INT16, DataType.UINT16])
-# folding, -1 is maximum possible
-@pytest.mark.parametrize("nf", [-1, 2, 1])
-# number of input features
-@pytest.mark.parametrize("ich", [16])
-# vecs
-@pytest.mark.parametrize("vecs", [[1], [1, 7, 7]])
-# function
-@pytest.mark.parametrize("func", ["cmp_le"])
-# execution mode
-@pytest.mark.parametrize("exec_mode", ["cppsim", "rtlsim"])
-@pytest.mark.vivado
-@pytest.mark.slow
-def test_fpgadataflow_thresholding(idt, act, nf, ich, func, vecs, exec_mode):
-    if nf == -1:
-        nf = ich
-    pe = ich // nf
-    assert ich % pe == 0
-
-    # generate input data
-    x = gen_finn_dt_tensor(idt, tuple(vecs + [ich]))
-
-    odt = act
-    n_steps = act.get_num_possible_values() - 1
-    T = np.random.randint(idt.min(), idt.max() + 1, (ich, n_steps)).astype(np.float32)
-    # provide non-decreasing thresholds
-    T = np.sort(T, axis=1)
-
-    model = make_modelwrapper(T, pe, idt, odt, func, vecs)
-
-    if exec_mode == "cppsim":
-        model = model.transform(PrepareCppSim())
-        model = model.transform(CompileCppSim())
-        model = model.transform(SetExecMode("cppsim"))
-    elif exec_mode == "rtlsim":
-        model = model.transform(SetExecMode("rtlsim"))
-        model = model.transform(GiveUniqueNodeNames())
-        model = model.transform(PrepareIP("xc7z020clg400-1", 5))
-        model = model.transform(HLSSynthIP())
-        model = model.transform(ReplaceVerilogRelPaths())
-        model = model.transform(PrepareRTLSim())
-    else:
-        raise Exception("Unknown exec_mode")
-
-    # package input data as dictionary
-    input_dict = {"inp": x}
-
-    if len(vecs) > 1:
-        y = multithreshold(x.transpose(0, 3, 1, 2), T).transpose(0, 2, 3, 1)
-    else:
-        y = multithreshold(x, T)
-    if act == DataType.BIPOLAR:
-        # binary to bipolar
-        y = 2 * y - 1
-    else:
-        # signed offset
-        y += act.min()
-
-    oshape = model.get_tensor_shape("outp")
     y_expected = y.reshape(oshape)
     # execute model
     y_produced = oxe.execute_onnx(model, input_dict)["outp"]
