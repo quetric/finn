@@ -31,10 +31,10 @@ gecho "cnpy @ $CNPY_COMMIT"
 git -C /workspace/cnpy pull --quiet
 git -C /workspace/cnpy checkout $CNPY_COMMIT --quiet
 # FINN hlslib
-gecho "finn-hlslib Tobi-Alonso (master)"
+gecho "finn-hlslib Tobi-Alonso (dev)"
 # gecho "finn-hlslib @ $HLSLIB_COMMIT"
 git -C /workspace/finn-hlslib pull --quiet
-# git -C /workspace/finn-hlslib checkout $HLSLIB_COMMIT --quiet
+git -C /workspace/finn-hlslib checkout dev --quiet
 # PyVerilator
 gecho "PyVerilator @ $PYVERILATOR_COMMIT"
 git -C /workspace/pyverilator pull --quiet
