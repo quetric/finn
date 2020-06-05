@@ -6,8 +6,8 @@ from finn.custom_op.fpgadataflow import HLSCustomOp
 from finn.util.data_packing import npy_to_rtlsim_input, rtlsim_output_to_npy
 
 
-class SameResize_Batch(HLSCustomOp):
-    """Class that corresponds to finn-hlslib SameResize function.
+class FMPadding_Batch(HLSCustomOp):
+    """Class that corresponds to finn-hlslib FMPadding_Batch function.
     Implements 'same' padding on a given input image."""
 
     def __init__(self, onnx_node):
@@ -16,13 +16,13 @@ class SameResize_Batch(HLSCustomOp):
     def get_nodeattr_types(self):
         my_attrs = {
             "ImgDim": ("i", True, 0),
-            "KernelDim": ("i", True, 0),
-            "Stride": ("i", True, 0),
+            "OutputDim": ("i", True, 0),
+            "Padding": ("i", True, 2),
             "NumChannels": ("i", True, 0),
             # FINN input datatype
             "inputDataType": ("s", True, ""),
-            # distribution of added values to achieve "same" padding
-            "PaddingStyle": ("i", True, 2),
+            "PaddingStyle": ("i", False, 2),
+            "numInputVectors": ("i", False, 1),
         }
         my_attrs.update(super().get_nodeattr_types())
         return my_attrs
@@ -35,14 +35,8 @@ class SameResize_Batch(HLSCustomOp):
         return ishape
 
     def get_normal_output_shape(self):
-        idim = self.get_nodeattr("ImgDim")
+        odim = self.get_nodeattr("OutputDim")
         num_ch = self.get_nodeattr("NumChannels")
-        kdim = self.get_nodeattr("KernelDim")
-        stride = self.get_nodeattr("Stride")
-        assert idim % stride == 0, "Stride must divide input dimension."
-        # number of "same" windows over the input data
-        same_windows = idim // stride
-        odim = kdim + stride * (same_windows - 1)
 
         oshape = (1, odim, odim, num_ch)
         return oshape
@@ -87,7 +81,7 @@ class SameResize_Batch(HLSCustomOp):
         # data type stays the same
         dtype = model.get_tensor_datatype(node.input[0])
         exp_idtype = self.get_input_datatype()
-        assert dtype == exp_idtype, "Unexpected datatype for SameResize_Batch"
+        assert dtype == exp_idtype, "Unexpected datatype for FMPadding_Batch"
         model.set_tensor_datatype(node.output[0], dtype)
 
     def verify_node(self):
@@ -96,9 +90,9 @@ class SameResize_Batch(HLSCustomOp):
     def get_input_datatype(self):
         """Returns FINN DataType of input."""
         ret = DataType[self.get_nodeattr("inputDataType")]
-        # the hlslib op always pads with zeroes, so ensure that the DataType
-        # is able to represent zeroes
-        assert ret.allowed(0), "SameResize_Batch DataType must support zero"
+        # the hlslib op always pads with zeros, so ensure that the DataType
+        # is able to represent zeros
+        assert ret.allowed(0), "FMPadding_Batch DataType must support zero"
         return ret
 
     def get_output_datatype(self):
@@ -125,18 +119,16 @@ class SameResize_Batch(HLSCustomOp):
         self.code_gen_dict["$GLOBALS$"] = ['#include "streamtools.h"']
 
     def defines(self, var):
-        numReps = 1
-        assert self.get_nodeattr("PaddingStyle") == 2, "Only PaddingStyle=2 supported"
         self.code_gen_dict["$DEFINES$"] = [
-            """#define ImgDim1 {}\n #define KernelDim1 {}\n
-            #define Stride1 {}\n #define NumChannels1 {}\n
-            #define PaddingStyle1 {}\n #define numReps {}""".format(
+            """#define ImgDim1 {}\n#define OutputDim1 {}\n
+            #define Padding1 {}\n#define NumChannels1 {}\n
+            #define PaddingStyle1 {}\n#define numReps {}\n""".format(
                 self.get_nodeattr("ImgDim"),
-                self.get_nodeattr("KernelDim"),
-                self.get_nodeattr("Stride"),
+                self.get_nodeattr("OutputDim"),
+                self.get_nodeattr("Padding"),
                 self.get_nodeattr("NumChannels"),
                 self.get_nodeattr("PaddingStyle"),
-                numReps,
+                self.get_nodeattr("numInputVectors"),
             )
         ]
 
@@ -171,8 +163,8 @@ class SameResize_Batch(HLSCustomOp):
         in_t = self.get_input_datatype().get_hls_datatype_str()
         node = self.onnx_node
         self.code_gen_dict["$DOCOMPUTE$"] = [
-            """{}<ImgDim1, KernelDim1, Stride1, NumChannels1,
-                {}, PaddingStyle1> (in0, out, numReps);""".format(
+            """{}<ImgDim1, OutputDim1, Padding1, NumChannels1,
+            {}, PaddingStyle1> (in0, out, numReps);""".format(
                 node.op_type, in_t
             )
         ]
@@ -261,8 +253,7 @@ class SameResize_Batch(HLSCustomOp):
             super().npy_to_dynamic_output(context)
             assert (
                 context[node.output[0]].shape == folded_oshape
-            ), "cppsim \
-            did not produce expected ofolded utput shape"
+            ), "cppsim did not produce expected folded output shape"
             context[node.output[0]] = context[node.output[0]].reshape(*exp_oshape)
         elif mode == "rtlsim":
             sim = self.get_rtlsim()
