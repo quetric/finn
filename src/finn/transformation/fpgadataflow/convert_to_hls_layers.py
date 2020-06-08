@@ -530,306 +530,6 @@ class InferThresholdingLayer(Transformation):
         return (model, graph_modified)
 
 
-class InferLabelSelectLayer(Transformation):
-    """Convert any TopK into a LabelSelect HLS layer."""
-
-    def apply(self, model):
-        graph = model.graph
-        node_ind = 0
-        graph_modified = False
-        for node in graph.node:
-            node_ind += 1
-            if node.op_type == "TopK":
-                fc_input = node.input[0]
-                k_input = node.input[1]
-                val_output = node.output[0]
-                idx_output = node.output[1]
-                fc_in_shape = model.get_tensor_shape(fc_input)
-
-                idt = model.get_tensor_datatype(fc_input)
-
-                # skip conversion for layers with float input
-                if not idt.is_integer():
-                    continue
-
-                # skip conversion for if value output is connected (not supported)
-                if model.find_consumer(val_output) is not None:
-                    continue
-
-                num_labels = int(fc_in_shape[-1])
-                # create node with no parallelization first
-                pe = 1
-                assert (
-                    num_labels % pe == 0
-                ), "Requirement Labels divisable by PE is violated."
-
-                k = model.get_initializer(k_input)[0]
-
-                # create and insert new StreamingFCLayer node
-                new_node = helper.make_node(
-                    "LabelSelect_Batch",
-                    [fc_input],
-                    [idx_output],
-                    domain="finn",
-                    backend="fpgadataflow",
-                    Labels=num_labels,
-                    PE=pe,
-                    K=k,
-                    inputDataType=idt.name,
-                )
-                graph.node.insert(node_ind, new_node)
-                # remove old node
-                graph.node.remove(node)
-                graph_modified = True
-
-        if graph_modified:
-            model = model.transform(InferShapes())
-            model = model.transform(InferDataTypes())
-        return (model, graph_modified)
-
-
-class InferAddStreamsLayer(Transformation):
-    """Convert any Add into a AddStreams HLS layer."""
-
-    def apply(self, model):
-        graph = model.graph
-        node_ind = 0
-        graph_modified = False
-        for node in graph.node:
-            node_ind += 1
-            if node.op_type == "Add":
-                in0 = node.input[0]
-                in1 = node.input[1]
-                result = node.output[0]
-                in0_shape = model.get_tensor_shape(in0)
-                in1_shape = model.get_tensor_shape(in1)
-
-                # skip if different shapes on inputs
-                if in0_shape != in1_shape:
-                    continue
-
-                idt0 = model.get_tensor_datatype(in0)
-                idt1 = model.get_tensor_datatype(in1)
-
-                # skip if different data types on inputs
-                if idt0 != idt1:
-                    continue
-
-                idt = idt0
-
-                # skip conversion for layers with float input
-                if not idt.is_integer():
-                    continue
-
-                # check layout and convert if necessary
-                in0_layout = model.get_tensor_layout(in0)
-                in1_layout = model.get_tensor_layout(in1)
-                result_layout = model.get_tensor_layout(result)
-
-                if in0_layout == DataLayout.NCHW:
-                    in0 = nchw_to_nhwc(in0, model, node_ind)
-                    node_ind += 1
-                    in0_shape = model.get_tensor_shape(in0)
-
-                if in1_layout == DataLayout.NCHW:
-                    in1 = nchw_to_nhwc(in1, model, node_ind)
-                    node_ind += 1
-                    in1_shape = model.get_tensor_shape(in1)
-
-                # keep track of where we need to insert the HLS Op
-                # it has to be ahead of the output transform
-                insert_point = node_ind
-
-                if result_layout == DataLayout.NCHW:
-                    result = nchw_to_nhwc(result, model, node_ind, reverse=True)
-                    node_ind += 1
-
-                # now safe to assume num_channels is size of last dimension
-                num_channels = int(in0_shape[-1])
-                # create node with no parallelization first
-                pe = 1
-                assert (
-                    num_channels % pe == 0
-                ), "Requirement Channels divisable by PE is violated."
-
-                # create and insert new StreamingFCLayer node
-                new_node = helper.make_node(
-                    "AddStreams_Batch",
-                    [in0, in1],
-                    [result],
-                    domain="finn",
-                    backend="fpgadataflow",
-                    NumChannels=num_channels,
-                    PE=pe,
-                    inputDataType=idt.name,
-                    numInputVectors=in0_shape[:-1],
-                )
-                graph.node.insert(insert_point, new_node)
-                # remove old node
-                graph.node.remove(node)
-                graph_modified = True
-
-        if graph_modified:
-            model = model.transform(InferShapes())
-            model = model.transform(InferDataTypes())
-        return (model, graph_modified)
-
-
-class InferGlobalAccPoolLayer(Transformation):
-    """Convert any GlobalAveragePool into a GlobalAccPool HLS layer and a scalar Mul."""
-
-    def apply(self, model):
-        graph = model.graph
-        node_ind = 0
-        graph_modified = False
-        for node in graph.node:
-            node_ind += 1
-            if node.op_type == "GlobalAveragePool":
-                in0 = node.input[0]
-                result = node.output[0]
-                in0_shape = model.get_tensor_shape(in0)
-
-                idt = model.get_tensor_datatype(in0)
-
-                # skip conversion for layers with float input
-                if not idt.is_integer():
-                    continue
-
-                # check layout and convert if necessary
-                in0_layout = model.get_tensor_layout(in0)
-                result_layout = model.get_tensor_layout(result)
-
-                if in0_layout == DataLayout.NCHW:
-                    in0 = nchw_to_nhwc(in0, model, node_ind)
-                    node_ind += 1
-                    in0_shape = model.get_tensor_shape(in0)
-
-                # keep track of where we need to insert the HLS Op
-                # it has to be ahead of the output transform
-                insert_point = node_ind
-
-                if result_layout == DataLayout.NCHW:
-                    result = nchw_to_nhwc(result, model, node_ind, reverse=True)
-                    node_ind += 1
-
-                num_ch = int(in0_shape[-1])
-                vecs = in0_shape[:-1]
-                # create node with no parallelization first
-                pe = 1
-                assert (
-                    num_ch % pe == 0
-                ), "Requirement Labels divisable by PE is violated."
-
-                # create an additional tensor of the same shape and layout as result
-                out_shape = model.get_tensor_shape(result)
-                pool_out = helper.make_tensor_value_info(
-                    model.make_new_valueinfo_name(), TensorProto.FLOAT, out_shape
-                )
-                model.graph.value_info.append(pool_out)
-                pool_out = pool_out.name
-                model.set_tensor_layout(pool_out, model.get_tensor_layout(result))
-
-                new_pool = helper.make_node(
-                    "GlobalAccPool_Batch",
-                    [in0],
-                    [pool_out],
-                    domain="finn",
-                    backend="fpgadataflow",
-                    NumChannels=num_ch,
-                    PE=pe,
-                    inputDataType=idt.name,
-                    numInputVectors=vecs,
-                )
-
-                mul_value = helper.make_tensor_value_info(
-                    model.make_new_valueinfo_name(), TensorProto.FLOAT, [1]
-                )
-                model.graph.value_info.append(mul_value)
-                model.set_initializer(mul_value.name, np.array(1 / (vecs[1] * vecs[2])))
-                new_mul = helper.make_node("Mul", [pool_out, mul_value.name], [result],)
-                graph.node.insert(insert_point, new_pool)
-                graph.node.insert(insert_point + 1, new_mul)
-                node_ind += 1
-                # remove old node
-                graph.node.remove(node)
-                graph_modified = True
-
-        if graph_modified:
-            model = model.transform(InferShapes())
-            model = model.transform(InferDataTypes())
-        return (model, graph_modified)
-
-
-class InferDuplicateStreamsLayer(Transformation):
-    """Convert any tensor with fanout > 1 into a DuplicateStreams HLS layer."""
-
-    def apply(self, model):
-        graph = model.graph
-        node_ind = 0
-        graph_modified = False
-        for node in graph.node:
-            node_ind += 1
-            successors = model.find_direct_successors(node.output[0])
-            if len(successors) == 2:
-                output_tensor = node.output[0]
-
-                dt = model.get_tensor_datatype(output_tensor)
-
-                # skip conversion for layers with float input
-                if not dt.is_integer():
-                    continue
-
-                # create two identical tensors
-                out_shape = model.get_tensor_shape(output_tensor)
-                dup0 = helper.make_tensor_value_info(
-                    model.make_new_valueinfo_name(), TensorProto.FLOAT, out_shape
-                )
-                dup1 = helper.make_tensor_value_info(
-                    model.make_new_valueinfo_name(), TensorProto.FLOAT, out_shape
-                )
-
-                num_ch = int(out_shape[-1])
-                vecs = out_shape[:-1]
-                # create node with no parallelization first
-                pe = 1
-                assert (
-                    num_ch % pe == 0
-                ), "Requirement Labels divisable by PE is violated."
-
-                model.graph.value_info.append(dup0)
-                model.graph.value_info.append(dup1)
-                dup_node = helper.make_node(
-                    "DuplicateStreams_Batch",
-                    [output_tensor],
-                    [dup0, dup1],
-                    domain="finn",
-                    backend="fpgadataflow",
-                    NumChannels=num_ch,
-                    PE=pe,
-                    inputDataType=dt.name,
-                    numInputVectors=vecs,
-                )
-
-                graph.node.insert(node_ind, dup_node)
-
-                # connect successors to dup0/dup1
-                assert (
-                    len(successors[0].input) == 1 and len(successors[1].input) == 1
-                ), "Duplicating to multi-input node not supported"
-
-                successors[0].input[0] = dup0
-                successors[1].input[0] = dup1
-
-                # remove old node
-                graph.node.remove(node)
-                graph_modified = True
-
-        if graph_modified:
-            model = model.transform(InferShapes())
-            model = model.transform(InferDataTypes())
-        return (model, graph_modified)
-
-
 class InferChannelwiseLinearLayer(Transformation):
     """Convert any channel-wise Add/Mul into a HLS layer."""
 
@@ -929,6 +629,306 @@ class InferChannelwiseLinearLayer(Transformation):
                     numInputVectors=list(ll_in_shape[:-1]),
                 )
                 graph.node.insert(insert_point, new_node)
+                # remove old node
+                graph.node.remove(node)
+                graph_modified = True
+
+        if graph_modified:
+            model = model.transform(InferShapes())
+            model = model.transform(InferDataTypes())
+        return (model, graph_modified)
+
+
+class InferGlobalAccPoolLayer(Transformation):
+    """Convert any GlobalAveragePool into a GlobalAccPool HLS layer and a scalar Mul."""
+
+    def apply(self, model):
+        graph = model.graph
+        node_ind = 0
+        graph_modified = False
+        for node in graph.node:
+            node_ind += 1
+            if node.op_type == "GlobalAveragePool":
+                in0 = node.input[0]
+                result = node.output[0]
+                in0_shape = model.get_tensor_shape(in0)
+
+                idt = model.get_tensor_datatype(in0)
+
+                # skip conversion for layers with float input
+                if not idt.is_integer():
+                    continue
+
+                # check layout and convert if necessary
+                in0_layout = model.get_tensor_layout(in0)
+                result_layout = model.get_tensor_layout(result)
+
+                if in0_layout == DataLayout.NCHW:
+                    in0 = nchw_to_nhwc(in0, model, node_ind)
+                    node_ind += 1
+                    in0_shape = model.get_tensor_shape(in0)
+
+                # keep track of where we need to insert the HLS Op
+                # it has to be ahead of the output transform
+                insert_point = node_ind
+
+                if result_layout == DataLayout.NCHW:
+                    result = nchw_to_nhwc(result, model, node_ind, reverse=True)
+                    node_ind += 1
+
+                num_ch = int(in0_shape[-1])
+                vecs = in0_shape[:-1]
+                # create node with no parallelization first
+                pe = 1
+                assert (
+                    num_ch % pe == 0
+                ), "Requirement Labels divisable by PE is violated."
+
+                # create an additional tensor of the same shape and layout as result
+                out_shape = model.get_tensor_shape(result)
+                pool_out = helper.make_tensor_value_info(
+                    model.make_new_valueinfo_name(), TensorProto.FLOAT, out_shape
+                )
+                model.graph.value_info.append(pool_out)
+                pool_out = pool_out.name
+                model.set_tensor_layout(pool_out, model.get_tensor_layout(result))
+
+                new_pool = helper.make_node(
+                    "GlobalAccPool_Batch",
+                    [in0],
+                    [pool_out],
+                    domain="finn",
+                    backend="fpgadataflow",
+                    NumChannels=num_ch,
+                    PE=pe,
+                    inputDataType=idt.name,
+                    numInputVectors=vecs,
+                )
+
+                mul_value = helper.make_tensor_value_info(
+                    model.make_new_valueinfo_name(), TensorProto.FLOAT, [1]
+                )
+                model.graph.value_info.append(mul_value)
+                model.set_initializer(mul_value.name, np.array(1 / (vecs[1] * vecs[2])))
+                new_mul = helper.make_node("Mul", [pool_out, mul_value.name], [result],)
+                graph.node.insert(insert_point, new_pool)
+                graph.node.insert(insert_point + 1, new_mul)
+                node_ind += 1
+                # remove old node
+                graph.node.remove(node)
+                graph_modified = True
+
+        if graph_modified:
+            model = model.transform(InferShapes())
+            model = model.transform(InferDataTypes())
+        return (model, graph_modified)
+
+
+class InferAddStreamsLayer(Transformation):
+    """Convert any Add into a AddStreams HLS layer."""
+
+    def apply(self, model):
+        graph = model.graph
+        node_ind = 0
+        graph_modified = False
+        for node in graph.node:
+            node_ind += 1
+            if node.op_type == "Add":
+                in0 = node.input[0]
+                in1 = node.input[1]
+                result = node.output[0]
+                in0_shape = model.get_tensor_shape(in0)
+                in1_shape = model.get_tensor_shape(in1)
+
+                # skip if different shapes on inputs
+                if in0_shape != in1_shape:
+                    continue
+
+                idt0 = model.get_tensor_datatype(in0)
+                idt1 = model.get_tensor_datatype(in1)
+
+                # skip if different data types on inputs
+                if idt0 != idt1:
+                    continue
+
+                idt = idt0
+
+                # skip conversion for layers with float input
+                if not idt.is_integer():
+                    continue
+
+                # check layout and convert if necessary
+                in0_layout = model.get_tensor_layout(in0)
+                in1_layout = model.get_tensor_layout(in1)
+                result_layout = model.get_tensor_layout(result)
+
+                if in0_layout == DataLayout.NCHW:
+                    in0 = nchw_to_nhwc(in0, model, node_ind)
+                    node_ind += 1
+                    in0_shape = model.get_tensor_shape(in0)
+
+                if in1_layout == DataLayout.NCHW:
+                    in1 = nchw_to_nhwc(in1, model, node_ind)
+                    node_ind += 1
+                    in1_shape = model.get_tensor_shape(in1)
+
+                # keep track of where we need to insert the HLS Op
+                # it has to be ahead of the output transform
+                insert_point = node_ind
+
+                if result_layout == DataLayout.NCHW:
+                    result = nchw_to_nhwc(result, model, node_ind, reverse=True)
+                    node_ind += 1
+
+                # now safe to assume num_channels is size of last dimension
+                num_channels = int(in0_shape[-1])
+                # create node with no parallelization first
+                pe = 1
+                assert (
+                    num_channels % pe == 0
+                ), "Requirement Channels divisable by PE is violated."
+
+                # create and insert new StreamingFCLayer node
+                new_node = helper.make_node(
+                    "AddStreams_Batch",
+                    [in0, in1],
+                    [result],
+                    domain="finn",
+                    backend="fpgadataflow",
+                    NumChannels=num_channels,
+                    PE=pe,
+                    inputDataType=idt.name,
+                    numInputVectors=in0_shape[:-1],
+                )
+                graph.node.insert(insert_point, new_node)
+                # remove old node
+                graph.node.remove(node)
+                graph_modified = True
+
+        if graph_modified:
+            model = model.transform(InferShapes())
+            model = model.transform(InferDataTypes())
+        return (model, graph_modified)
+
+
+class InferDuplicateStreamsLayer(Transformation):
+    """Convert any tensor with fanout > 1 into a DuplicateStreams HLS layer."""
+
+    def apply(self, model):
+        graph = model.graph
+        node_ind = 0
+        graph_modified = False
+        for node in graph.node:
+            node_ind += 1
+            successors = model.find_direct_successors(node.output[0])
+            if len(successors) == 2:
+                output_tensor = node.output[0]
+
+                dt = model.get_tensor_datatype(output_tensor)
+
+                # skip conversion for layers with float input
+                if not dt.is_integer():
+                    continue
+
+                # create two identical tensors
+                out_shape = model.get_tensor_shape(output_tensor)
+                dup0 = helper.make_tensor_value_info(
+                    model.make_new_valueinfo_name(), TensorProto.FLOAT, out_shape
+                )
+                dup1 = helper.make_tensor_value_info(
+                    model.make_new_valueinfo_name(), TensorProto.FLOAT, out_shape
+                )
+
+                num_ch = int(out_shape[-1])
+                vecs = out_shape[:-1]
+                # create node with no parallelization first
+                pe = 1
+                assert (
+                    num_ch % pe == 0
+                ), "Requirement Labels divisable by PE is violated."
+
+                model.graph.value_info.append(dup0)
+                model.graph.value_info.append(dup1)
+                dup_node = helper.make_node(
+                    "DuplicateStreams_Batch",
+                    [output_tensor],
+                    [dup0, dup1],
+                    domain="finn",
+                    backend="fpgadataflow",
+                    NumChannels=num_ch,
+                    PE=pe,
+                    inputDataType=dt.name,
+                    numInputVectors=vecs,
+                )
+
+                graph.node.insert(node_ind, dup_node)
+
+                # connect successors to dup0/dup1
+                assert (
+                    len(successors[0].input) == 1 and len(successors[1].input) == 1
+                ), "Duplicating to multi-input node not supported"
+
+                successors[0].input[0] = dup0
+                successors[1].input[0] = dup1
+
+                # remove old node
+                graph.node.remove(node)
+                graph_modified = True
+
+        if graph_modified:
+            model = model.transform(InferShapes())
+            model = model.transform(InferDataTypes())
+        return (model, graph_modified)
+
+
+class InferLabelSelectLayer(Transformation):
+    """Convert any TopK into a LabelSelect HLS layer."""
+
+    def apply(self, model):
+        graph = model.graph
+        node_ind = 0
+        graph_modified = False
+        for node in graph.node:
+            node_ind += 1
+            if node.op_type == "TopK":
+                fc_input = node.input[0]
+                k_input = node.input[1]
+                val_output = node.output[0]
+                idx_output = node.output[1]
+                fc_in_shape = model.get_tensor_shape(fc_input)
+
+                idt = model.get_tensor_datatype(fc_input)
+
+                # skip conversion for layers with float input
+                if not idt.is_integer():
+                    continue
+
+                # skip conversion for if value output is connected (not supported)
+                if model.find_consumer(val_output) is not None:
+                    continue
+
+                num_labels = int(fc_in_shape[-1])
+                # create node with no parallelization first
+                pe = 1
+                assert (
+                    num_labels % pe == 0
+                ), "Requirement Labels divisable by PE is violated."
+
+                k = model.get_initializer(k_input)[0]
+
+                # create and insert new StreamingFCLayer node
+                new_node = helper.make_node(
+                    "LabelSelect_Batch",
+                    [fc_input],
+                    [idx_output],
+                    domain="finn",
+                    backend="fpgadataflow",
+                    Labels=num_labels,
+                    PE=pe,
+                    K=k,
+                    inputDataType=idt.name,
+                )
+                graph.node.insert(node_ind, new_node)
                 # remove old node
                 graph.node.remove(node)
                 graph_modified = True
