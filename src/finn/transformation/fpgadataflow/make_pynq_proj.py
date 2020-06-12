@@ -105,11 +105,11 @@ class MakePYNQProject(Transformation):
         multiple of 8."""
         in_bytes = i_bits_per_cycle_padded / 8
         out_bytes = o_bits_per_cycle_padded / 8
-        in_if_name = "in0_V_V_0"
-        out_if_name = "out_r_0"
-        clk_name = "ap_clk_0"
-        nrst_name = "ap_rst_n_0"
-        axi_lite_if_name = "s_axi_control_0"
+        in_if_name = "s_axis_0"
+        out_if_name = "m_axis_0"
+        clk_name = "ap_clk"
+        nrst_name = "ap_rst_n"
+        axi_lite_if_name = "s_axi_control"
         vivado_ip_cache = os.getenv("VIVADO_IP_CACHE", default="")
 
         # create a temporary folder for the project
