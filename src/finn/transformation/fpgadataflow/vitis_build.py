@@ -194,7 +194,7 @@ class VitisLink(Transformation):
             f.write("#!/bin/bash \n")
             f.write("cd {}\n".format(link_dir))
             f.write(
-                "vitis -t hw --platform %s --link %s"
+                "v++ -t hw --platform %s --link %s"
                 " --kernel_frequency %d --config config.txt\n"
                 % (self.platform, " ".join(object_files), self.f_mhz)
             )
