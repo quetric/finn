@@ -50,6 +50,19 @@ pynq_native_port_width["Pynq-Z2"] = 64
 pynq_native_port_width["Ultra96"] = 128
 pynq_native_port_width["ZCU104"] = 128
 
+# Alveo device and platform mappings
+alveo_part_map = dict()
+alveo_part_map["U50"] = ""
+alveo_part_map["U200"] = ""
+alveo_part_map["U250"] = "xcu250-figd2104-2L-e"
+alveo_part_map["U280"] = ""
+
+alveo_default_platform = dict()
+alveo_default_platform["U50"] = "xilinx_u50_gen3x16_xdma_201920_3"
+alveo_default_platform["U200"] = "xilinx_u200_xdma_201830_2"
+alveo_default_platform["U250"] = "xilinx_u250_xdma_201830_2"
+alveo_default_platform["U280"] = "xilinx_u280_xdma_201920_3"
+
 
 def get_rtlsim_trace_depth():
     """Return the trace depth for rtlsim via PyVerilator. Controllable

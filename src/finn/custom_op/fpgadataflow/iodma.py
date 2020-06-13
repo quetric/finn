@@ -27,7 +27,6 @@ class IODMA(HLSCustomOp):
     def get_normal_input_shape(self):
         idim = self.get_nodeattr("ImgDim")
         num_ch = self.get_nodeattr("NumChannels")
-
         ishape = (1, idim, idim, num_ch)
         return ishape
 
@@ -35,9 +34,14 @@ class IODMA(HLSCustomOp):
         return self.get_normal_input_shape()
 
     def get_folded_input_shape(self):
-        ret = list(self.get_normal_input_shape())
-        ret.insert(-1, 1)
-        return tuple(ret)
+        shape = list(self.get_normal_input_shape())
+        itype_bits = self.get_input_datatype().bitwidth()
+        intfw = self.get_nodeattr("intfWidth")
+        elems_per_word = intfw / itype_bits
+        fold_depth = round(shape[-1] / elems_per_word)
+        shape[-1] = fold_depth
+        shape.append(elems_per_word)
+        return tuple(shape)
 
     def get_folded_output_shape(self):
         return self.get_folded_input_shape()
@@ -87,8 +91,14 @@ class IODMA(HLSCustomOp):
         return self.get_instream_width()
 
     def get_number_output_values(self):
-        folded_oshape = self.get_folded_output_shape()
-        return np.prod(folded_oshape[:-1])
+        oshape = self.get_normal_output_shape()
+        itype_bits = self.get_input_datatype().bitwidth()
+        intfw = self.get_nodeattr("intfWidth")
+        nelems = np.prod(oshape)
+        nbits = nelems * itype_bits
+        assert nbits % intfw == 0, "DMA: total transfer size must be word multiple"
+        ovalues = nbits // intfw
+        return ovalues
 
     def global_includes(self):
         self.code_gen_dict["$GLOBALS$"] = ['#include "dma.h"']
@@ -100,7 +110,7 @@ class IODMA(HLSCustomOp):
         assert (
             imdim * imdim * ch * itype_bits
         ) % 8 == 0, "DMA input not a multiple of 1 Byte"
-        itype_bytes = (imdim * imdim * ch * itype_bits) // 8
+        itype_bytes = (imdim * imdim * ch * itype_bits) // 8  # TODO fix for 1d tensors
         self.code_gen_dict["$DEFINES$"] = [
             """#define NumBytes1 {}\n#define DataWidth1 {}\n""".format(
                 itype_bytes, self.get_nodeattr("intfWidth")
