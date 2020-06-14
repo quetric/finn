@@ -80,7 +80,7 @@ def make_model(idt, ch, k):
 # board
 @pytest.mark.parametrize("board", ["U250"])
 # clock period
-@pytest.mark.parametrize("period_ns", ["5"])
+@pytest.mark.parametrize("period_ns", [5])
 @pytest.mark.slow
 @pytest.mark.vivado
 def test_vitis_export(idt, ch, k, board, period_ns):
