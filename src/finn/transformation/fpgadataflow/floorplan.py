@@ -44,18 +44,23 @@ class Floorplan(Transformation):
         # we currently assume that all dataflow nodes belonging to the same partition
         # are connected to each other and there is a single input/output to/from each.
         all_nodes = list(model.graph.node)
-        df_nodes = filter(
-            lambda x: get_by_name(x.attribute, "backend") is not None, all_nodes
+        df_nodes = list(
+            filter(lambda x: get_by_name(x.attribute, "backend") is not None, all_nodes)
         )
-        dma_nodes = filter(lambda x: x.op_type == "IODMA", df_nodes)
-        dma_nodes = list(dma_nodes)
-        non_dma_nodes = filter(lambda x: x not in dma_nodes, df_nodes)
-        dyn_tlastmarker_nodes = filter(
-            lambda x: x.op_type == "TLastMarker"
-            and getCustomOp(x).get_nodeattr("DynIters") == "true",
-            non_dma_nodes,
+        dma_nodes = list(filter(lambda x: x.op_type == "IODMA", df_nodes))
+
+        non_dma_nodes = list(filter(lambda x: x not in dma_nodes, df_nodes))
+        dyn_tlastmarker_nodes = list(
+            filter(
+                lambda x: x.op_type == "TLastMarker"
+                and getCustomOp(x).get_nodeattr("DynIters") == "true",
+                non_dma_nodes,
+            )
         )
-        non_dma_nodes = filter(lambda x: x not in dyn_tlastmarker_nodes, non_dma_nodes)
+
+        non_dma_nodes = list(
+            filter(lambda x: x not in dyn_tlastmarker_nodes, non_dma_nodes)
+        )
 
         for node in dma_nodes:
             node_inst = getCustomOp(node)

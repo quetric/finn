@@ -217,7 +217,7 @@ class VitisBuild(Transformation):
     def apply(self, model):
         # First prepare at global level, then break up into kernels
         prep_transforms = [
-            InsertIODMA(),
+            InsertIODMA(512),
             InsertDWC(),
             Floorplan(),
             CreateDataflowPartition(),

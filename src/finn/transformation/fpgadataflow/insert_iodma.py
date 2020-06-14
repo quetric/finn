@@ -30,14 +30,19 @@ from onnx import TensorProto
 from onnx import helper as oh
 
 from finn.transformation import Transformation
+import math
+import numpy as np
 
 
 class InsertIODMA(Transformation):
     """Insert DMA nodes on all inputs and outputs."""
 
-    def __init__(self, intfwidth=32):
+    def __init__(self, max_intfwidth=32):
         super().__init__()
-        self.intfwidth = intfwidth
+        assert (
+            2 ** math.log2(max_intfwidth) == max_intfwidth
+        ), "max_intfwidth must be a power of 2"
+        self.max_intfwidth = max_intfwidth
 
     def apply(self, model):
         # TODO only makes sense for a pure fpgadataflow graph -- check!
@@ -52,6 +57,12 @@ class InsertIODMA(Transformation):
             if final_node.op_type != "IODMA":
                 out_shape = model.get_tensor_shape(graph_out_name)
                 out_dtype = model.get_tensor_datatype(graph_out_name)
+                # determine the feasible interface width
+                transfer_bits = np.prod(out_shape) * out_dtype.bitwidth()
+                intfwidth = math.gcd(transfer_bits, self.max_intfwidth)
+                assert (
+                    intfwidth % 8 == 0
+                ), "No feasible interface width for transfer size"
                 # make new buffer
                 final_node_out = oh.make_tensor_value_info(
                     model.make_new_valueinfo_name(), TensorProto.FLOAT, out_shape
@@ -64,10 +75,10 @@ class InsertIODMA(Transformation):
                     "IODMA",
                     [final_node_out.name],
                     [graph_out_name],
-                    ImgDim=out_shape[-2],
+                    numInputVectors=out_shape[:-1],
                     NumChannels=out_shape[-1],
                     dataType=str(out_dtype.name),
-                    intfWidth=self.intfwidth,
+                    intfWidth=intfwidth,
                     direction="out",
                     domain="finn",
                     backend="fpgadataflow",
@@ -76,6 +87,12 @@ class InsertIODMA(Transformation):
             if first_node.op_type != "IODMA":
                 in_shape = model.get_tensor_shape(graph_in_name)
                 in_dtype = model.get_tensor_datatype(graph_in_name)
+                # determine the feasible interface width
+                transfer_bits = np.prod(in_shape) * in_dtype.bitwidth()
+                intfwidth = math.gcd(transfer_bits, self.max_intfwidth)
+                assert (
+                    intfwidth % 8 == 0
+                ), "No feasible interface width for transfer size"
                 # make new buffer
                 first_node_in = oh.make_tensor_value_info(
                     model.make_new_valueinfo_name(), TensorProto.FLOAT, in_shape
@@ -88,10 +105,10 @@ class InsertIODMA(Transformation):
                     "IODMA",
                     [graph_in_name],
                     [first_node_in.name],
-                    ImgDim=in_shape[-2],
+                    numInputVectors=in_shape[:-1],
                     NumChannels=in_shape[-1],
                     dataType=str(in_dtype.name),
-                    intfWidth=self.intfwidth,
+                    intfWidth=intfwidth,
                     direction="in",
                     domain="finn",
                     backend="fpgadataflow",

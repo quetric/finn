@@ -39,60 +39,53 @@ from finn.transformation.fpgadataflow.vitis_build import VitisBuild
 from finn.util.basic import alveo_part_map, alveo_default_platform
 
 
-def make_model(dt, width=32):
-    inp = helper.make_tensor_value_info("inp", TensorProto.FLOAT, [1, 32, 32, 16])
-    outp = helper.make_tensor_value_info("outp", TensorProto.FLOAT, [1, 32, 32, 16])
-    inter = helper.make_tensor_value_info("inter", TensorProto.FLOAT, [1, 32, 32, 16])
+def make_model(idt, ch, k):
+    inp = helper.make_tensor_value_info("inp", TensorProto.FLOAT, [1, ch])
+    outp = helper.make_tensor_value_info("outp", TensorProto.FLOAT, [1, k])
 
-    idma_node = helper.make_node(
-        "IODMA",
+    labelselect_node = helper.make_node(
+        "LabelSelect_Batch",
         [inp.name],
-        [inter.name],
-        ImgDim=32,
-        NumChannels=16,
-        dataType=dt.name,
-        intfWidth=width,
-        direction="in",
-        domain="finn",
-        backend="fpgadataflow",
-    )
-
-    odma_node = helper.make_node(
-        "IODMA",
-        [inter.name],
         [outp.name],
-        ImgDim=32,
-        NumChannels=16,
-        dataType=dt.name,
-        intfWidth=width,
-        direction="out",
         domain="finn",
         backend="fpgadataflow",
+        Labels=ch,
+        PE=1,
+        K=k,
+        inputDataType=idt.name,
     )
 
     graph = helper.make_graph(
-        nodes=[idma_node, odma_node], name="graph", inputs=[inp], outputs=[outp],
+        nodes=[labelselect_node], name="graph", inputs=[inp], outputs=[outp],
     )
 
     model = helper.make_model(graph, producer_name="model")
     model = ModelWrapper(model)
 
-    model.set_tensor_datatype("inp", dt)
-    model.set_tensor_datatype("outp", dt)
-    model.set_tensor_datatype("inter", dt)
+    model.set_tensor_datatype(inp.name, idt)
+    model.set_tensor_datatype(outp.name, DataType.UINT32)
 
     model.graph.value_info.append(inp)
     model.graph.value_info.append(outp)
-    model.graph.value_info.append(inter)
 
     return model
 
 
+# input datatype -- checked by assertion in HLSCustomOp
+@pytest.mark.parametrize("idt", [DataType.UINT16])
+# input channels
+@pytest.mark.parametrize("ch", [1024])
+# number of top labels to select
+@pytest.mark.parametrize("k", [5])
+# board
+@pytest.mark.parametrize("board", ["U250"])
+# clock period
+@pytest.mark.parametrize("period_ns", ["5"])
 @pytest.mark.slow
 @pytest.mark.vivado
-def test_vitis_export(board="U250", period_ns=10):
+def test_vitis_export(idt, ch, k, board, period_ns):
     platform = alveo_default_platform[board]
     fpga_part = alveo_part_map[board]
-    model = make_model(DataType.UINT32)
+    model = make_model(idt, ch, k)
     model = model.transform(VitisBuild(fpga_part, period_ns, platform))
     model.save("vitis_dataflow.onnx")

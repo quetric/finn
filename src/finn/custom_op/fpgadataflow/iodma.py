@@ -12,7 +12,6 @@ class IODMA(HLSCustomOp):
 
     def get_nodeattr_types(self):
         my_attrs = {
-            "ImgDim": ("i", True, 0),
             "NumChannels": ("i", True, 0),
             # FINN input datatype
             "dataType": ("s", True, ""),
@@ -20,14 +19,16 @@ class IODMA(HLSCustomOp):
             "intfWidth": ("i", False, 32),
             "burstMode": ("s", False, "increment"),
             "direction": ("s", False, "in"),
+            # shape describing input vecs per execution
+            "numInputVectors": ("ints", False, [1]),
         }
         my_attrs.update(super().get_nodeattr_types())
         return my_attrs
 
     def get_normal_input_shape(self):
-        idim = self.get_nodeattr("ImgDim")
+        vecs = list(self.get_nodeattr("numInputVectors"))
         num_ch = self.get_nodeattr("NumChannels")
-        ishape = (1, idim, idim, num_ch)
+        ishape = tuple(vecs + [num_ch])
         return ishape
 
     def get_normal_output_shape(self):
@@ -104,16 +105,13 @@ class IODMA(HLSCustomOp):
         self.code_gen_dict["$GLOBALS$"] = ['#include "dma.h"']
 
     def defines(self, var):
-        imdim = self.get_nodeattr("ImgDim")
-        ch = self.get_nodeattr("NumChannels")
         itype_bits = self.get_input_datatype().bitwidth()
-        assert (
-            imdim * imdim * ch * itype_bits
-        ) % 8 == 0, "DMA input not a multiple of 1 Byte"
-        itype_bytes = (imdim * imdim * ch * itype_bits) // 8  # TODO fix for 1d tensors
+        total_bits = itype_bits * np.prod(self.get_normal_input_shape())
+        assert total_bits % 8 == 0, "DMA input not a multiple of 1 Byte"
+        total_bytes = total_bits // 8
         self.code_gen_dict["$DEFINES$"] = [
             """#define NumBytes1 {}\n#define DataWidth1 {}\n""".format(
-                itype_bytes, self.get_nodeattr("intfWidth")
+                total_bytes, self.get_nodeattr("intfWidth")
             )
         ]
 
