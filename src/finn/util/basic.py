@@ -52,10 +52,10 @@ pynq_native_port_width["ZCU104"] = 128
 
 # Alveo device and platform mappings
 alveo_part_map = dict()
-alveo_part_map["U50"] = ""
-alveo_part_map["U200"] = ""
+alveo_part_map["U50"] = "xcu50-fsvh2104-2L-e"
+alveo_part_map["U200"] = "xcu200-fsgd2104-2-e"
 alveo_part_map["U250"] = "xcu250-figd2104-2L-e"
-alveo_part_map["U280"] = ""
+alveo_part_map["U280"] = "xcu280-fsvh2892-2L-e"
 
 alveo_default_platform = dict()
 alveo_default_platform["U50"] = "xilinx_u50_gen3x16_xdma_201920_3"
