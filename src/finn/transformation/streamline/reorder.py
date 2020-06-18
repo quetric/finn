@@ -27,12 +27,14 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 import numpy as np
+import warnings
 from onnx import helper as oh
 
 from finn.transformation import Transformation
 from finn.transformation.infer_shapes import InferShapes
 from finn.core.onnx_exec import execute_node
 from finn.util.basic import get_by_name
+from finn.custom_op.registry import getCustomOp
 
 
 class MoveAddPastMul(Transformation):
@@ -607,17 +609,30 @@ class MoveMaxPoolPastMultiThreshold(Transformation):
             node_ind += 1
             if n.op_type == "MaxPool" and not model.is_fork_node(n):
                 consumer = model.find_consumer(n.output[0])
+                pads = get_by_name(n.attribute, "pads")
+                has_padding = False
+                if pads is not None:
+                    pads = list(pads.ints)
+                    has_padding = np.prod(pads) != 0
                 if consumer is not None and consumer.op_type == "MultiThreshold":
-                    is_signed = True
-                    for attr in consumer.attribute:
-                        if (
-                            attr.name == "out_dtype"
-                            and len(attr.s) >= 5
-                            and attr.s[:4] == b"UINT"
-                        ):
-                            is_signed = False
-
-                    if is_signed:
+                    mt_out = consumer.output[0]
+                    mt_odt = model.get_tensor_datatype(mt_out)
+                    if mt_odt.signed() and has_padding:
+                        warnings.warn(
+                            "Skipping padded MaxPool + signed-output MultiThreshold"
+                        )
+                        continue
+                    # check for non-decreasing thresholds and nonnegative
+                    # scale factor in MultiThreshold
+                    # otherwise we cannot do the reordering
+                    T = model.get_initializer(consumer.input[1])
+                    T_sorted = np.sort(T, axis=1)
+                    assert (
+                        T == T_sorted
+                    ).all(), "MultiThreshold must have non-decreasing thresholds"
+                    mt_inst = getCustomOp(consumer)
+                    if mt_inst.get_nodeattr("out_scale") < 0:
+                        warnings.warn("Skipping MultiThreshold with negative out_scale")
                         continue
 
                     # remove old nodes
