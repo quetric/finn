@@ -46,6 +46,7 @@ from finn.transformation.fpgadataflow.replace_verilog_relpaths import (
 )
 from finn.transformation.fpgadataflow.create_stitched_ip import CreateStitchedIP
 from finn.transformation.fpgadataflow.floorplan import Floorplan
+from finn.transformation.fpgadataflow.make_pynq_driver import MakePYNQDriver
 from finn.transformation.general import GiveReadableTensorNames, GiveUniqueNodeNames
 from finn.util.basic import make_build_dir
 
@@ -153,6 +154,9 @@ class VitisLink(Transformation):
         # create a config file and empty list of xo files
         config = ["[connectivity]"]
         object_files = []
+        idma_idx = 0
+        odma_idx = 0
+        stream_producers = {}
         for node in model.graph.node:
             assert node.op_type == "StreamingDataflowPartition", "Invalid link graph"
             sdp_node = getCustomOp(node)
@@ -160,9 +164,6 @@ class VitisLink(Transformation):
             kernel_model = ModelWrapper(dataflow_model_filename)
             kernel_xo = kernel_model.get_metadata_prop("vitis_xo")
             object_files.append(kernel_xo)
-            # define kernel instances
-            config.append("nk=%s:1:%s" % (node.name, node.name))
-            config.append("slr=%s:SLR0" % node.name)
             # gather info on connectivity
             # assume each node connected to outputs/inputs is DMA:
             # has axis, aximm and axilite
@@ -172,11 +173,32 @@ class VitisLink(Transformation):
             # all kernels allocated to SLR0
             producer = model.find_producer(node.input[0])
             consumer = model.find_consumer(node.output[0])
+            # define kernel instances
+            # name kernels connected to graph inputs as idmaxx
+            # name kernels connected to graph inputs as odmaxx
+            if producer is None:
+                instance_name = "idma" + str(idma_idx)
+                config.append("nk=%s:1:%s" % (node.name, instance_name))
+                idma_idx += 1
+            elif consumer is None:
+                instance_name = "odma" + str(odma_idx)
+                config.append("nk=%s:1:%s" % (node.name, instance_name))
+                odma_idx += 1
+            else:
+                instance_name = node.name
+                config.append("nk=%s:1:%s" % (node.name, instance_name))
+            # assign SLRs
+            config.append("slr=%s:SLR0" % instance_name)
+            # assign memory banks
             if producer is None or consumer is None:
-                config.append("sp=%s.m_axi_gmem0:DDR[%d]" % (node.name, 0))
+                config.append("sp=%s.m_axi_gmem0:DDR[%d]" % (instance_name, 0))
+            # connect streams
             if consumer is not None:
+                stream_producers[node.output[0]] = instance_name
+            if producer is not None:
                 config.append(
-                    "stream_connect=%s.m_axis:%s.s_axis" % (node.name, consumer.name)
+                    "stream_connect=%s.m_axis:%s.s_axis"
+                    % (stream_producers[node.input[0]], instance_name)
                 )
 
         # create a temporary folder for the project
@@ -217,6 +239,7 @@ class VitisBuild(Transformation):
     def apply(self, model):
         # First prepare at global level, then break up into kernels
         prep_transforms = [
+            MakePYNQDriver(),
             InsertIODMA(512),
             InsertDWC(),
             Floorplan(),
