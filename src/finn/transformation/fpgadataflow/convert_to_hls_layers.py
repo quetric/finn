@@ -966,7 +966,7 @@ class InferAddStreamsLayer(Transformation):
 
 
 class InferDuplicateStreamsLayer(Transformation):
-    """Convert any tensor with fanout > 1 into a DuplicateStreams HLS layer."""
+    """Insert a DuplicateStreams HLS layer for any tensor with fanout == 2 """
 
     def apply(self, model):
         graph = model.graph
@@ -974,8 +974,8 @@ class InferDuplicateStreamsLayer(Transformation):
         graph_modified = False
         for node in graph.node:
             node_ind += 1
-            successors = model.find_direct_successors(node.output[0])
-            if len(successors) == 2:
+            successors = model.find_consumers(node.output[0])
+            if successors is not None and len(successors) == 2:
                 output_tensor = node.output[0]
 
                 dt = model.get_tensor_datatype(output_tensor)
@@ -984,29 +984,29 @@ class InferDuplicateStreamsLayer(Transformation):
                 if not dt.is_integer():
                     continue
 
-                # create two identical tensors
+                # create clone tensors
                 out_shape = model.get_tensor_shape(output_tensor)
-                dup0 = helper.make_tensor_value_info(
-                    model.make_new_valueinfo_name(), TensorProto.FLOAT, out_shape
-                )
-                dup1 = helper.make_tensor_value_info(
-                    model.make_new_valueinfo_name(), TensorProto.FLOAT, out_shape
-                )
+                out_tensor_clones = []
+                for i in range(2):
+                    clone = helper.make_tensor_value_info(
+                        model.make_new_valueinfo_name(), TensorProto.FLOAT, out_shape
+                    )
+                    model.graph.value_info.append(clone)
+                    out_tensor_clones += [clone.name]
 
                 num_ch = int(out_shape[-1])
                 vecs = out_shape[:-1]
+
                 # create node with no parallelization first
                 pe = 1
                 assert (
                     num_ch % pe == 0
-                ), "Requirement Labels divisable by PE is violated."
+                ), "Requirement channels divisable by PE is violated."
 
-                model.graph.value_info.append(dup0)
-                model.graph.value_info.append(dup1)
                 dup_node = helper.make_node(
                     "DuplicateStreams_Batch",
                     [output_tensor],
-                    [dup0, dup1],
+                    out_tensor_clones,
                     domain="finn",
                     backend="fpgadataflow",
                     NumChannels=num_ch,
@@ -1017,16 +1017,18 @@ class InferDuplicateStreamsLayer(Transformation):
 
                 graph.node.insert(node_ind, dup_node)
 
-                # connect successors to dup0/dup1
-                assert (
-                    len(successors[0].input) == 1 and len(successors[1].input) == 1
-                ), "Duplicating to multi-input node not supported"
+                # connect successors to out tensor clone
+                clone_idx = 0
+                for successor in successors:
+                    for i, succ_input in enumerate(successor.input):
+                        if succ_input == output_tensor:
+                            successor.input[i] = out_tensor_clones[clone_idx]
+                            clone_idx += 1
+                            # if one node has multiple connections to the same output
+                            # find_direct_successors will return one node per input
+                            # so break the inner loop will result in correct behaviour
+                            break
 
-                successors[0].input[0] = dup0
-                successors[1].input[0] = dup1
-
-                # remove old node
-                graph.node.remove(node)
                 graph_modified = True
 
         if graph_modified:
