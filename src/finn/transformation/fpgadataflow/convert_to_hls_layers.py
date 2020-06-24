@@ -35,6 +35,7 @@ from finn.transformation import Transformation
 from finn.custom_op.registry import getCustomOp
 from finn.transformation.infer_shapes import InferShapes
 from finn.transformation.infer_datatypes import InferDataTypes
+from finn.transformation.general import SortGraph
 import finn.core.data_layout as DataLayout
 from finn.util.onnx import nchw_to_nhwc
 from finn.util.basic import get_by_name
@@ -927,6 +928,7 @@ class InferDuplicateStreamsLayer(Transformation):
                 graph_modified = True
 
         if graph_modified:
+            model = model.transform(SortGraph())
             model = model.transform(InferShapes())
             model = model.transform(InferDataTypes())
         return (model, graph_modified)
