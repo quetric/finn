@@ -998,7 +998,8 @@ class InferChannelwiseLinearLayer(Transformation):
 
         for k in DataType.__members__:
             dt = DataType[k]
-            if dt in [DataType.BIPOLAR, DataType.BIPOLAR]:
+
+            if dt in [DataType.BIPOLAR, DataType.TERNARY]:
                 # not currently supported
                 continue
 
