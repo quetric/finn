@@ -87,7 +87,8 @@ class StreamingFCLayer_Batch(HLSCustomOp):
             "numInputVectors": ("ints", False, [1]),
             # memory mode for the FC weights
             # const -- embedded weights, default, long compile/synth times
-            # decoupled -- streaming weights
+            # decoupled -- streaming weights with weight streamer packaged inside IP
+            # external -- streaming weights with external streamer
             "mem_mode": ("s", False, "const"),
             # FPGA resource type for memories in decoupled mode
             # auto -- let Vivado decide
@@ -105,14 +106,14 @@ class StreamingFCLayer_Batch(HLSCustomOp):
         node = self.onnx_node
         # set top name depending on mem_mode
         mem_mode = self.get_nodeattr("mem_mode")
-        if mem_mode == "const":
+        if mem_mode == "const" or mem_mode == "external":
             prefixed_top_name = "%s_%s" % (node.name, node.name)
         elif mem_mode == "decoupled":
             prefixed_top_name = "%s_memstream" % (node.name)
         else:
             raise Exception(
-                """Please set mem_mode to "const" or "decoupled", currently no other
-                parameter value is supported!"""
+                """Please set mem_mode to "const", "decoupled", or "external",
+                currently no other parameter value is supported!"""
             )
         return prefixed_top_name
 
@@ -471,7 +472,8 @@ class StreamingFCLayer_Batch(HLSCustomOp):
 
     def generate_params(self, model, path):
         mem_mode = self.get_nodeattr("mem_mode")
-        # weights
+        code_gen_dir = path
+        # weights, if not external
         weights = model.get_initializer(self.onnx_node.input[1])
         # convert weights into hlslib-compatible format
         weight_tensor = self.get_hls_compatible_weight_tensor(weights)
@@ -480,7 +482,6 @@ class StreamingFCLayer_Batch(HLSCustomOp):
         # so use it as such for weight generation
         if self.get_weight_datatype() == DataType.BIPOLAR:
             export_wdt = DataType.BINARY
-        code_gen_dir = path
 
         if mem_mode == "const":
             """Saves weights into params.h"""
@@ -510,7 +511,7 @@ class StreamingFCLayer_Batch(HLSCustomOp):
             f_weights.write(weight_hls_code)
             f_weights.close()
 
-        elif mem_mode == "decoupled":
+        elif mem_mode == "decoupled" or mem_mode == "external":
             """Saves weights in corresponding file format for cppsim or rtlsim"""
             # transpose weight tensor from (1, PE, WMEM, SIMD) to (1, WMEM, PE, SIMD)
             weight_tensor_unflipped = np.transpose(weight_tensor, (0, 2, 1, 3))
@@ -539,37 +540,37 @@ class StreamingFCLayer_Batch(HLSCustomOp):
                 os.path.join(code_gen_dir, "weights.npy"), weight_tensor_simd_flipped
             )
 
-            """Saves weights into .dat file"""
-            # convert weight values into hexstring
-            weight_width = self.get_weightstream_width()
-            # pad to nearest 4 bits to get hex strings
-            weight_width_padded = roundup_to_integer_multiple(weight_width, 4)
-            weight_tensor_pe_flipped = pack_innermost_dim_as_hex_string(
-                weight_tensor_pe_flipped, export_wdt, weight_width_padded, prefix=""
-            )
-            weight_stream_len = np.prod(weight_tensor_pe_flipped.shape)
-            factor = math.ceil(weight_stream_len / 1024)
-            # add zeroes to pad out file to 1024 entries
-            weight_stream = weight_tensor_pe_flipped.flatten()
-            pad_amt = (factor * 1024) - weight_stream_len
-            weight_stream = np.pad(
-                weight_stream, (0, pad_amt), mode="constant", constant_values="0"
-            )
-            weight_stream = weight_stream.copy()
-            i = 0
-            j = 0
-            for val in weight_stream:
-                if i == 1024:
-                    i = 0
-                    j += 1
-                with open("{}/memblock_{}.dat".format(code_gen_dir, j), "a+") as f:
-                    f.write(val + "\n")
-                i += 1
-
+            if mem_mode == "decoupled":
+                """Saves weights into .dat file"""
+                # convert weight values into hexstring
+                weight_width = self.get_weightstream_width()
+                # pad to nearest 4 bits to get hex strings
+                weight_width_padded = roundup_to_integer_multiple(weight_width, 4)
+                weight_tensor_pe_flipped = pack_innermost_dim_as_hex_string(
+                    weight_tensor_pe_flipped, export_wdt, weight_width_padded, prefix=""
+                )
+                weight_stream_len = np.prod(weight_tensor_pe_flipped.shape)
+                factor = math.ceil(weight_stream_len / 1024)
+                # add zeroes to pad out file to 1024 entries
+                weight_stream = weight_tensor_pe_flipped.flatten()
+                pad_amt = (factor * 1024) - weight_stream_len
+                weight_stream = np.pad(
+                    weight_stream, (0, pad_amt), mode="constant", constant_values="0"
+                )
+                weight_stream = weight_stream.copy()
+                i = 0
+                j = 0
+                for val in weight_stream:
+                    if i == 1024:
+                        i = 0
+                        j += 1
+                    with open("{}/memblock_{}.dat".format(code_gen_dir, j), "a+") as f:
+                        f.write(val + "\n")
+                    i += 1
         else:
             raise Exception(
-                """Please set mem_mode to "const"i or "decoupled", currently no other
-                    parameter value is supported!"""
+                """Please set mem_mode to "const", "decoupled", or "external",
+                currently no other parameter value is supported!"""
             )
 
         # save thresholds in thresh.h
@@ -617,6 +618,7 @@ class StreamingFCLayer_Batch(HLSCustomOp):
 
     def execute_node(self, context, graph):
         mode = self.get_nodeattr("exec_mode")
+        mem_mode = self.get_nodeattr("mem_mode")
         node = self.onnx_node
 
         # TODO ensure codegen dir exists
@@ -685,7 +687,24 @@ class StreamingFCLayer_Batch(HLSCustomOp):
             )
             super().reset_rtlsim(sim)
             super().toggle_clk(sim)
-            output = self.rtlsim(sim, inp)
+            if mem_mode == "external":
+                wnbits = self.get_weightstream_width()
+                export_wdt = self.get_weight_datatype()
+                # we have converted bipolar weights to binary for export,
+                # so use it as such for weight generation
+                if self.get_weight_datatype() == DataType.BIPOLAR:
+                    export_wdt = DataType.BINARY
+                wei = npy_to_rtlsim_input(
+                    "{}/weights.npy".format(code_gen_dir), export_wdt, wnbits
+                )
+                io_dict = {
+                    "inputs": {"in0": inp, "weights": wei},
+                    "outputs": {"out": []},
+                }
+                self.rtlsim_multi_io(sim, io_dict)
+                output = io_dict["outputs"]["out"]
+            else:
+                output = self.rtlsim(sim, inp)
             odt = self.get_output_datatype()
             target_bits = odt.bitwidth()
             packed_bits = self.get_outstream_width()
@@ -716,12 +735,12 @@ class StreamingFCLayer_Batch(HLSCustomOp):
         if mem_mode == "const":
             # self.code_gen_dict["$GLOBALS$"] += ['#include "params.h"']
             pass
-        elif mem_mode == "decoupled":
+        elif mem_mode == "decoupled" or mem_mode == "external":
             self.code_gen_dict["$GLOBALS$"] += ['#include "mvau.hpp"']
         else:
             raise Exception(
-                """Please set mem_mode to "const" or "decoupled", currently no other
-                    parameter value is supported!"""
+                """Please set mem_mode to "const", "decoupled", or "external",
+                currently no other parameter value is supported!"""
             )
         if self.calc_tmem() != 0:
             # TODO find a better way of checking for no pregenerated thresholds
@@ -744,7 +763,7 @@ class StreamingFCLayer_Batch(HLSCustomOp):
                 numReps,
             )
         ]
-        if mem_mode == "decoupled":
+        if mem_mode == "decoupled" or mem_mode == "external":
             wdt = self.get_weight_datatype()
             self.code_gen_dict["$DEFINES$"].append(
                 "#define WP1 {}\n".format(wdt.bitwidth())
@@ -770,7 +789,7 @@ class StreamingFCLayer_Batch(HLSCustomOp):
         )
 
         mem_mode = self.get_nodeattr("mem_mode")
-        if mem_mode == "decoupled":
+        if mem_mode == "decoupled" or mem_mode == "external":
             wdt = self.get_weight_datatype()
             elem_bits = wdt.bitwidth()
             packed_bits = self.get_weightstream_width()
@@ -794,7 +813,7 @@ class StreamingFCLayer_Batch(HLSCustomOp):
             'hls::stream<ap_uint<{}>> out ("out");'.format(self.get_outstream_width())
         )
 
-        if mem_mode == "decoupled":
+        if mem_mode == "decoupled" or mem_mode == "external":
             self.code_gen_dict["$STREAMDECLARATIONS$"].append(
                 'hls::stream<ap_uint<{}>> weights ("weights");'.format(
                     self.get_weightstream_width()
@@ -822,7 +841,7 @@ class StreamingFCLayer_Batch(HLSCustomOp):
                     self.get_nodeattr("resType"),
                 )
             ]
-        elif mem_mode == "decoupled":
+        elif mem_mode == "decoupled" or mem_mode == "external":
             wdt = self.get_weight_datatype()
             if wdt == DataType.BIPOLAR:
                 export_wdt = DataType.BINARY
@@ -843,8 +862,8 @@ class StreamingFCLayer_Batch(HLSCustomOp):
 
         else:
             raise Exception(
-                """Please set mem_mode to "const" or "decoupled", currently no other
-                    parameter value is supported!"""
+                """Please set mem_mode to "const", "decoupled", or "external",
+                currently no other parameter value is supported!"""
             )
 
     def dataoutstrm(self):
@@ -890,7 +909,7 @@ class StreamingFCLayer_Batch(HLSCustomOp):
                     self.get_outstream_width(),
                 )
             ]
-        elif mem_mode == "decoupled":
+        elif mem_mode == "decoupled" or mem_mode == "external":
             self.code_gen_dict["$BLACKBOXFUNCTION$"] = [
                 """void {}(
                     hls::stream<ap_uint<{}>> &in0,
@@ -939,7 +958,7 @@ class StreamingFCLayer_Batch(HLSCustomOp):
                     "complete dim=1"
                 )
             )
-        elif mem_mode == "decoupled":
+        elif mem_mode == "decoupled" or mem_mode == "external":
             self.code_gen_dict["$PRAGMAS$"].append(
                 "#pragma HLS INTERFACE axis port=weights"
             )
@@ -949,8 +968,8 @@ class StreamingFCLayer_Batch(HLSCustomOp):
 
         else:
             raise Exception(
-                """Please set mem_mode to "const", currently no other
-                    parameter value is supported!"""
+                """Please set mem_mode to "const", "decoupled", or external,
+                currently no other parameter value is supported!"""
             )
 
         # the threshold tensor is acc_type [PE][TMEM][N_THRES]
