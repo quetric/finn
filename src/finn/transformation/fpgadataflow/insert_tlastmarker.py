@@ -38,8 +38,8 @@ import numpy as np
 
 class InsertTLastMarker(Transformation):
     """Ensure that the graph is started/terminated with a TLastMarker node, inserting
-    one if necessary. Use constructor args to determine type of TLastMarker to be
-    inserted. More information available on the TLastMarker documentation.
+    one if necessary. Use constructor args to determine type of TLastMarker to be inserted.
+    More information available on the TLastMarker documentation.
     """
 
     def __init__(self, both=False, external=True, dynamic=True):

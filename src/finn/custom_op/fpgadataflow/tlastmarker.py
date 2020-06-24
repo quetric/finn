@@ -33,9 +33,8 @@ class TLastMarker(HLSCustomOp):
     """Node that adds/removes AXI stream TLAST signals where needed. Its behavior
     is transparent in node-by-node execution, only visible in IP-stitched rtlsim or
     actual hardware.
-    This node may be needed at the end of the network to signal a DMA write (needed by
-    the FINN PYNQ shell) or at the beginning to remove the end-of-burst from DMA read.
-    """
+    This node  may be needed at the end of the network to signal a DMA write (needed by the
+    FINN PYNQ shell) or at the beginning to remove the end-of-burst from DMA read."""
 
     def __init__(self, onnx_node):
         super().__init__(onnx_node)
