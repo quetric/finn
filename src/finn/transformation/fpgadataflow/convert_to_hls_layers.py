@@ -1061,10 +1061,11 @@ class InferChannelwiseLinearLayer(Transformation):
                 # check if the shape of initializer is compatible
                 ll_cinit_shape = list(ll_cinit.shape)
                 if np.prod(ll_cinit_shape) == 1:
-                    # TODO broadcast
-                    pass
-
-                if np.prod(ll_cinit_shape) != ch or ll_cinit_shape[ch_index] != ch:
+                    warnings.warn(
+                        "Broadcasting " + str(node.op_type) + "(" + node.name + ")"
+                    )
+                    ll_cinit = np.full((ch), ll_cinit.flatten()[0])
+                elif np.prod(ll_cinit_shape) != ch or ll_cinit_shape[ch_index] != ch:
                     # parameter shape not compatible with Channelwise_batch
                     continue
 
