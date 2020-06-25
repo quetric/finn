@@ -89,6 +89,24 @@ class CreateDataflowPartition(Transformation):
                 df_model.graph.input.insert(0, df_in_vi)
                 df_model.graph.output.remove(df_model.graph.output[0])
                 df_model.graph.output.insert(0, df_out_vi)
+                # parse StreamingFCLayers looking for external weight memories
+                fc_extw_nodes = filter(
+                    lambda x: x.op_type == "StreamingFCLayer_Batch"
+                    and get_by_name(x.attribute, "mem_mode").s.decode("UTF-8")
+                    == "external",
+                    df_nodes,
+                )
+                fc_extw_nodes = list(fc_extw_nodes)
+                extra_df_inputs = []
+
+                for i in range(len(fc_extw_nodes)):
+                    fc_weight_vi = df_model.get_tensor_valueinfo(
+                        fc_extw_nodes[i].input[1]
+                    )
+                    df_model.graph.input.insert(i, fc_weight_vi)
+                    extra_df_inputs.append(fc_extw_nodes[i].input[1])
+
+                # save model
                 df_model_dir = make_build_dir(
                     "dataflow_partition" + str(target_partition_id) + "_"
                 )
@@ -102,7 +120,7 @@ class CreateDataflowPartition(Transformation):
                 # create StreamingDataflow node with df_in/df_out io
                 df_node = helper.make_node(
                     "StreamingDataflowPartition",
-                    [df_in],
+                    [df_in] + extra_df_inputs,
                     [df_out],
                     # use the model attribute to mark the df model
                     model=df_model_filename,
