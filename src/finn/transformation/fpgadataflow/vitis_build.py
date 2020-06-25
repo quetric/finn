@@ -89,7 +89,7 @@ class CreateVitisXO(Transformation):
                 arg_id += 1
                 # add a axilite port if dynamic
                 # add a count parameter if dynamic
-                if node_inst.get_nodeattr("DynIters") == "true":
+                if node_inst.get_nodeattr("DynIters") == 1:
                     args_string.append(
                         "{numReps:0:%s:s_axi_control:0x4:0x10:uint:0}" % str(arg_id)
                     )

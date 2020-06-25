@@ -204,7 +204,7 @@ class CreateStitchedIP(Transformation):
                         has_m_axis is False
                     ), "Currently limited to one master AXI-Stream"
                     has_m_axis = True
-                    if node_inst.get_nodeattr("DynIters") == "true":
+                    if node_inst.get_nodeattr("DynIters") == 1:
                         # make AXI lite IF external
                         connect_cmds.append(
                             "make_bd_intf_pins_external "
