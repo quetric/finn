@@ -34,6 +34,7 @@ import pytest
 from onnx import TensorProto, helper
 from finn.core.datatype import DataType
 from finn.core.modelwrapper import ModelWrapper
+from finn.custom_op.registry import getCustomOp
 
 from finn.transformation.fpgadataflow.vitis_build import VitisBuild
 from finn.util.basic import alveo_part_map, alveo_default_platform
@@ -87,5 +88,6 @@ def test_vitis_export(idt, ch, k, board, period_ns):
     platform = alveo_default_platform[board]
     fpga_part = alveo_part_map[board]
     model = make_model(idt, ch, k)
+    getCustomOp(model.graph.node[0]).set_nodeattr("inFIFODepth", 64)
     model = model.transform(VitisBuild(fpga_part, period_ns, platform))
     model.save("vitis_dataflow.onnx")
