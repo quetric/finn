@@ -54,14 +54,12 @@ from finn.transformation.fpgadataflow.create_dataflow_partition import (
 )
 from finn.transformation.fpgadataflow.insert_dwc import InsertDWC
 from finn.transformation.fpgadataflow.insert_tlastmarker import InsertTLastMarker
-from finn.transformation.fpgadataflow.insert_iodma import InsertIODMA
 from finn.transformation.fpgadataflow.prepare_ip import PrepareIP
 from finn.transformation.fpgadataflow.hlssynth_ip import HLSSynthIP
 from finn.transformation.fpgadataflow.replace_verilog_relpaths import (
     ReplaceVerilogRelPaths,
 )
 from finn.transformation.fpgadataflow.create_stitched_ip import CreateStitchedIP
-from finn.transformation.fpgadataflow.create_vitis_xo import CreateVitisXO
 from finn.transformation.fpgadataflow.set_exec_mode import SetExecMode
 from finn.transformation.fpgadataflow.prepare_cppsim import PrepareCppSim
 from finn.transformation.fpgadataflow.compile_cppsim import CompileCppSim
@@ -175,144 +173,6 @@ def test_end2end_cnv_w1a1_fold_and_tlastmarker():
     model = model.transform(GiveUniqueNodeNames())
     model = model.transform(AnnotateResources("estimate"))
     model.save(build_dir + "/end2end_cnv_w1a1_folded.onnx")
-
-
-# insert only at bottom (False) or top and bottom (True)
-@pytest.mark.parametrize("both", [True, False])
-# use ap_axis (True) or ap_axiu (False)
-@pytest.mark.parametrize("external", [True, False])
-# use dynamic (True) or static (False) batch size
-@pytest.mark.parametrize("dynamic", [True, False])
-def test_end2end_cnv_w1a1_insert_tlastmarker(both, external, dynamic):
-    model = load_test_checkpoint_or_skip(
-        build_dir + "/end2end_cnv_w1a1_dataflow_model.onnx"
-    )
-    model = model.transform(
-        InsertTLastMarker(both=both, external=external, dynamic=dynamic)
-    )
-    model = model.transform(GiveUniqueNodeNames())
-    model.save(
-        build_dir
-        + "/end2end_cnv_w1a1_tlast_"
-        + ("b" if both else "")
-        + ("e" if external else "")
-        + ("d" if dynamic else "")
-        + ".onnx"
-    )
-
-
-# select DMA AXI-MM interface width 32/512 bit
-@pytest.mark.parametrize("intfwidth", [32, 512])
-def test_end2end_cnv_w1a1_insert_iodma(intfwidth):
-    model = load_test_checkpoint_or_skip(
-        build_dir + "/end2end_cnv_w1a1_dataflow_model.onnx"
-    )
-    model = model.transform(InsertIODMA(intfwidth))
-    model = model.transform(GiveUniqueNodeNames())
-    model.save(build_dir + "/end2end_cnv_w1a1_iodma_" + str(intfwidth) + ".onnx")
-
-
-@pytest.mark.slow
-@pytest.mark.vivado
-def test_end2end_cnv_w1a1_create_floorplan():
-    model = load_test_checkpoint_or_skip(build_dir + "/end2end_cnv_w1a1_iodma_32.onnx")
-    # floorplan such that DMAs are independent, and FC are separate from conv
-    floorplan = [
-        0,
-        1,
-        1,
-        1,
-        1,
-        1,
-        1,
-        1,
-        2,
-        2,
-        2,
-        2,
-        2,
-        2,
-        2,
-        3,
-        3,
-        3,
-        4,
-    ]
-    for fcl, pid in zip(model.get_finn_nodes(), floorplan):
-        fcl_inst = getCustomOp(fcl)
-        fcl_inst.set_nodeattr("partition_id", pid)
-
-    fc_layers = model.get_nodes_by_op_type("StreamingFCLayer_Batch")
-    # each tuple is (PE, SIMD, in_fifo_depth) for a layer
-    folding = [
-        (16, 3, 128),
-        (32, 32, 128),
-        (16, 32, 128),
-        (16, 32, 128),
-        (4, 32, 81),
-        (1, 32, 2),
-        (1, 4, 2),
-        (1, 8, 128),
-        (5, 1, 3),
-    ]
-    for fcl, (pe, simd, ififodepth) in zip(fc_layers, folding):
-        fcl_inst = getCustomOp(fcl)
-        fcl_inst.set_nodeattr("PE", pe)
-        fcl_inst.set_nodeattr("SIMD", simd)
-        fcl_inst.set_nodeattr("inFIFODepth", ififodepth)
-
-    swg_layers = model.get_nodes_by_op_type("ConvolutionInputGenerator")
-    for i in range(len(swg_layers)):
-        swg_inst = getCustomOp(swg_layers[i])
-        simd = folding[i][1]
-        swg_inst.set_nodeattr("SIMD", simd)
-
-    parent_model = model.transform(CreateDataflowPartition())
-    parent_model = parent_model.transform(GiveUniqueNodeNames())
-    parent_model.save(build_dir + "/end2end_cnv_w1a1_floorplan_parent.onnx")
-    sdp_nodes = parent_model.get_nodes_by_op_type("StreamingDataflowPartition")
-    for sdp_node in sdp_nodes:
-        sdp_node = getCustomOp(sdp_node)
-        dataflow_model_filename = sdp_node.get_nodeattr("model")
-        dataflow_model = load_test_checkpoint_or_skip(dataflow_model_filename)
-        dataflow_model = dataflow_model.transform(InsertDWC())
-        dataflow_model = dataflow_model.transform(
-            InsertTLastMarker(both=True, external=False, dynamic=False)
-        )
-        dataflow_model = dataflow_model.transform(GiveUniqueNodeNames())
-        updated_onnx = (
-            build_dir + "/end2end_cnv_w1a1_" + sdp_node.onnx_node.name + ".onnx"
-        )
-        dataflow_model.save(updated_onnx)
-        dataflow_model = dataflow_model.transform(
-            PrepareIP(test_fpga_part, target_clk_ns)
-        )
-        dataflow_model = dataflow_model.transform(HLSSynthIP())
-        dataflow_model = dataflow_model.transform(ReplaceVerilogRelPaths())
-        dataflow_model = dataflow_model.transform(
-            CreateStitchedIP(
-                test_fpga_part, target_clk_ns, sdp_node.onnx_node.name, True
-            )
-        )
-        dataflow_model.save(updated_onnx)
-        sdp_node.set_nodeattr("model", updated_onnx)
-    parent_model.save(build_dir + "/end2end_cnv_w1a1_floorplan_parent_stitched.onnx")
-
-
-@pytest.mark.slow
-@pytest.mark.vivado
-def test_end2end_cnv_w1a1_create_xo():
-    model = load_test_checkpoint_or_skip(
-        build_dir + "/end2end_cnv_w1a1_floorplan_parent.onnx"
-    )
-    sdp_nodes = model.get_nodes_by_op_type("StreamingDataflowPartition")
-    for sdp_node in sdp_nodes:
-        sdp_node = getCustomOp(sdp_node)
-        dataflow_model_filename = sdp_node.get_nodeattr("model")
-        dataflow_model = load_test_checkpoint_or_skip(dataflow_model_filename)
-        dataflow_model = dataflow_model.transform(
-            CreateVitisXO(sdp_node.onnx_node.name)
-        )
 
 
 @pytest.mark.slow
