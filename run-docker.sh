@@ -50,6 +50,11 @@ if [ -z "$PYNQ_IP" ];then
         recho "Please set the PYNQ_IP env.var. to enable PYNQ deployment tests."
 fi
 
+if [ -z "$VITIS_PATH" ];then
+        recho "Please set the VITIS_PATH that contains the path to your Vitis installation directory."
+        recho "FINN functionality depending on Vitis will not be available."
+fi
+
 DOCKER_GID=$(id -g)
 DOCKER_GNAME=$(id -gn)
 DOCKER_UNAME=$(id -un)
@@ -93,6 +98,7 @@ mkdir -p $FINN_SSH_KEY_DIR
 gecho "Instance is named as $DOCKER_INST_NAME"
 gecho "Mounting $BUILD_LOCAL into $BUILD_LOCAL"
 gecho "Mounting $VIVADO_PATH into $VIVADO_PATH"
+gecho "Mounting $VITIS_PATH into $VITIS_PATH"
 gecho "Port-forwarding for Jupyter $JUPYTER_PORT:$JUPYTER_PORT"
 gecho "Port-forwarding for Netron $NETRON_PORT:$NETRON_PORT"
 gecho "Vivado IP cache dir is at $VIVADO_IP_CACHE"
@@ -135,8 +141,10 @@ docker run -t --rm --name $DOCKER_INST_NAME $DOCKER_INTERACTIVE --init \
 -v $SCRIPTPATH:/workspace/finn \
 -v $BUILD_LOCAL:$BUILD_LOCAL \
 -v $VIVADO_PATH:$VIVADO_PATH \
+-v $VITIS_PATH:$VITIS_PATH \
 -v $FINN_SSH_KEY_DIR:/home/$DOCKER_UNAME/.ssh \
 -e VIVADO_PATH=$VIVADO_PATH \
+-e VITIS_PATH=$VITIS_PATH \
 -e FINN_INST_NAME=$DOCKER_INST_NAME \
 -e FINN_ROOT="/workspace/finn" \
 -e VIVADO_IP_CACHE="$VIVADO_IP_CACHE" \
