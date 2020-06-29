@@ -92,6 +92,7 @@ class CreateDataflowPartition(Transformation):
                 # parse StreamingFCLayers looking for external weight memories
                 fc_extw_nodes = filter(
                     lambda x: x.op_type == "StreamingFCLayer_Batch"
+                    and get_by_name(x.attribute, "mem_mode") is not None
                     and get_by_name(x.attribute, "mem_mode").s.decode("UTF-8")
                     == "external",
                     df_nodes,
