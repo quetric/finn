@@ -181,7 +181,7 @@ def test_end2end_tfc_w2a2_vitis(board, period_ns):
         fcl_inst.set_nodeattr("ram_style", ramstyle)
 
     model = model.transform(VitisBuild(fpga_part, period_ns, platform))
-    model.save(build_dir + "/end2end_tfc_w2a2_dataflow_model.onnx")
+    model.save(build_dir + "/end2end_tfc_w2a2_dataflow_model_vitis.onnx")
 
 
 @pytest.mark.slow

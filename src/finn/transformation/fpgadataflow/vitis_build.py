@@ -50,6 +50,7 @@ from finn.transformation.fpgadataflow.floorplan import Floorplan
 from finn.transformation.fpgadataflow.make_pynq_driver import MakePYNQDriver
 from finn.transformation.general import GiveReadableTensorNames, GiveUniqueNodeNames
 from finn.util.basic import make_build_dir
+from finn.transformation.infer_data_layouts import InferDataLayouts
 
 
 class CreateVitisXO(Transformation):
@@ -238,7 +239,9 @@ class VitisBuild(Transformation):
         self.platform = platform
 
     def apply(self, model):
-        # First prepare at global level, then break up into kernels
+        # first infer layouts
+        model = model.transform(InferDataLayouts())
+        # prepare at global level, then break up into kernels
         prep_transforms = [
             MakePYNQDriver(),
             InsertIODMA(512),

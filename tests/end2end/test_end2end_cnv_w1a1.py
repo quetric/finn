@@ -216,7 +216,7 @@ def test_end2end_cnv_w1a1_vitis(board, period_ns):
         swg_inst.set_nodeattr("inFIFODepth", swg_idepth[i])
 
     model = model.transform(VitisBuild(fpga_part, period_ns, platform))
-    model.save(build_dir + "/end2end_cnv_w1a1_vitis_dataflow.onnx")
+    model.save(build_dir + "/end2end_cnv_w1a1_vitis_dataflow_vitis.onnx")
 
 
 @pytest.mark.slow

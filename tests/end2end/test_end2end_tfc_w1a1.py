@@ -192,7 +192,7 @@ def test_end2end_tfc_w1a1_vitis(board, period_ns, extw):
         fcl_inst.set_nodeattr("mem_mode", mmode)
 
     model = model.transform(VitisBuild(fpga_part, period_ns, platform))
-    model.save(build_dir + "/end2end_tfc_w1a1_dataflow_model.onnx")
+    model.save(build_dir + "/end2end_tfc_w1a1_dataflow_model_vitis.onnx")
 
 
 @pytest.mark.slow
