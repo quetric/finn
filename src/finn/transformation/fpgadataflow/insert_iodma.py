@@ -54,12 +54,12 @@ class InsertIODMA(Transformation):
             get_by_name(x.attribute, "backend").s.decode("UTF-8") == "fpgadataflow"
             for x in all_nodes
         )
-        # parse all streamingfclayers looking for external weights
+        # parse streamingfclayers looking for external weights with no attached IODMA
         fc_extw_nodes = list(
             filter(
                 lambda x: x.op_type == "StreamingFCLayer_Batch"
-                and get_by_name(x.attribute, "mem_mode").s.decode("UTF-8")
-                == "external",
+                and get_by_name(x.attribute, "mem_mode").s.decode("UTF-8") == "external"
+                and model.find_producer(x.input[1]) is None,
                 all_nodes,
             )
         )
@@ -175,7 +175,7 @@ class InsertIODMA(Transformation):
                     domain="finn",
                     backend="fpgadataflow",
                 )
+                fc_node.input[1] = fc_node_in.name
                 model.graph.node.insert(0, dma_node)
-
             model = model.transform(SortGraph())
             return (model, True)

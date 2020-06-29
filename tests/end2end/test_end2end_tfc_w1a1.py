@@ -164,9 +164,11 @@ def test_end2end_tfc_w1a1_fold_and_tlastmarker():
 @pytest.mark.parametrize("board", ["U250"])
 # clock period
 @pytest.mark.parametrize("period_ns", [5])
+# override mem_mode to external
+@pytest.mark.parametrize("extw", [True, False])
 @pytest.mark.slow
 @pytest.mark.vivado
-def test_end2end_tfc_w1a1_vitis(board, period_ns):
+def test_end2end_tfc_w1a1_vitis(board, period_ns, extw):
     platform = alveo_default_platform[board]
     fpga_part = alveo_part_map[board]
     model = load_test_checkpoint_or_skip(
@@ -175,18 +177,19 @@ def test_end2end_tfc_w1a1_vitis(board, period_ns):
     fc_layers = model.get_nodes_by_op_type("StreamingFCLayer_Batch")
     # (PE, SIMD, in_fifo_depth, out_fifo_depth, ramstyle) for each layer
     config = [
-        (16, 49, 16, 64, "block"),
-        (8, 8, 64, 64, "auto"),
-        (8, 8, 64, 64, "auto"),
-        (10, 8, 64, 10, "distributed"),
+        (16, 49, 16, 64, "block", "external" if extw else mem_mode),
+        (8, 8, 64, 64, "auto", "external" if extw else mem_mode),
+        (8, 8, 64, 64, "auto", "external" if extw else mem_mode),
+        (10, 8, 64, 10, "distributed", "external" if extw else mem_mode),
     ]
-    for fcl, (pe, simd, ififo, ofifo, ramstyle) in zip(fc_layers, config):
+    for fcl, (pe, simd, ififo, ofifo, ramstyle, mmode) in zip(fc_layers, config):
         fcl_inst = getCustomOp(fcl)
         fcl_inst.set_nodeattr("PE", pe)
         fcl_inst.set_nodeattr("SIMD", simd)
         fcl_inst.set_nodeattr("inFIFODepth", ififo)
         fcl_inst.set_nodeattr("outFIFODepth", ofifo)
         fcl_inst.set_nodeattr("ram_style", ramstyle)
+        fcl_inst.set_nodeattr("mem_mode", mmode)
 
     model = model.transform(VitisBuild(fpga_part, period_ns, platform))
     model.save(build_dir + "/end2end_tfc_w1a1_dataflow_model.onnx")
