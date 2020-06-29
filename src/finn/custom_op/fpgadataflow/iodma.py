@@ -33,6 +33,43 @@ from finn.core.datatype import DataType
 from finn.custom_op.fpgadataflow import HLSCustomOp
 
 
+# the IODMA inerfaces a memory-mapped AXI interface and an AXI stream
+# direction "in": pulls data from AXI-MM to AXI stream
+# direction "out": pushes data from AXI stream to AXI-MM
+
+# DMA Addressing
+# - burst mode can be "wrap" or "increment"
+# - "increment" bursts will increment the address when moving to the next image
+# - "wrap" bursts will reinitialize the address to the start address,
+#   and are useful for e.g. streaming weights, where the same buffer is
+#   repeatedly read into the FPGA
+# - no additional alignment restrictions beyond anything specified in the AXI spec
+
+# Interfaces
+# - AXI-MM interface width (in bits) is specified by intfWidth
+# - AXI-Stream interface width (in bits) is specified by streamWidth
+# - If inftWidth and streamWidth are not equal, the DMA core performs
+#   width conversion by going up to the least common multiple of bitwidths
+#   e.g. intfWidth=32b -> 96b -> sreamWidth=24b
+# - transfers occur in multiples of the AXI-MM interface width, therefore
+#   the total number of bits in the tensor must be a multiple of intfWidth
+# - transfers occur in multiples of the AXI-Stream interface width, therefore
+#   the total number of bits in the tensor must be a multiple of streamWidth
+# - both interface widths must be a multiple of 8b (AXI protocol requirement)
+# - in most systems, intfWidth is also restricted to a power of 2 (e.g. Vitis)
+#   but this is not universal so we don't check here explicitly
+
+# Input/output tensor sizes shapes
+# - The data being moved is a tensor of shape numInputVectors+[NumChannels]
+# - The data type of the tensor elements is specified by dataType
+# - on the stream side
+#       -the normal shape is the same as the ONNX tensor attached to it
+#       -the folded shape is computed from the stream width and normal shape
+# - on the AXI-MM side
+#       -the normal shape is the same as the one on the stream side
+#       -the folded shape is not defined
+
+
 class IODMA(HLSCustomOp):
     """Class that corresponds to finn-hlslib DMA function(s)."""
 
