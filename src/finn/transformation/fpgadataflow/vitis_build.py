@@ -69,6 +69,8 @@ class CreateVitisXO(Transformation):
         vivado_proj_dir = model.get_metadata_prop("vivado_stitch_proj")
         stitched_ip_dir = vivado_proj_dir + "/ip"
         args_string = []
+        m_axis_idx = 0
+        s_axis_idx = 0
         # NOTE: this assumes the graph is Vitis-compatible: max one axi lite interface
         # developed from instructions in UG1393 (v2019.2) and package_xo documentation
         # package_xo is responsible for generating the kernel xml
@@ -80,14 +82,16 @@ class CreateVitisXO(Transformation):
                 # add a stream input or output port, based on direction
                 if node_inst.get_nodeattr("Direction") == "in":
                     args_string.append(
-                        "{in:4:%s:s_axis:0x0:0x0:ap_uint&lt;%s>:0}"
-                        % (str(arg_id), str(stream_width))
+                        "{in:4:%s:s_axis_%d:0x0:0x0:ap_uint&lt;%s>:0}"
+                        % (str(arg_id), s_axis_idx, str(stream_width))
                     )
+                    s_axis_idx += 1
                 else:
                     args_string.append(
-                        "{out:4:%s:m_axis:0x0:0x0:ap_uint&lt;%s>:0}"
-                        % (str(arg_id), str(stream_width))
+                        "{out:4:%s:m_axis_%d:0x0:0x0:ap_uint&lt;%s>:0}"
+                        % (str(arg_id), m_axis_idx, str(stream_width))
                     )
+                    m_axis_idx += 1
                 arg_id += 1
                 # add a axilite port if dynamic
                 # add a count parameter if dynamic
@@ -158,7 +162,6 @@ class VitisLink(Transformation):
         object_files = []
         idma_idx = 0
         odma_idx = 0
-        stream_producers = {}
         for node in model.graph.node:
             assert node.op_type == "StreamingDataflowPartition", "Invalid link graph"
             sdp_node = getCustomOp(node)
@@ -174,7 +177,7 @@ class VitisLink(Transformation):
             # all aximm allocated to DDR[0]
             # all kernels allocated to SLR0
             producer = model.find_producer(node.input[0])
-            consumer = model.find_consumer(node.output[0])
+            consumer = model.find_consumers(node.output[0])
             # define kernel instances
             # name kernels connected to graph inputs as idmaxx
             # name kernels connected to graph inputs as odmaxx
@@ -195,13 +198,15 @@ class VitisLink(Transformation):
             if producer is None or consumer is None:
                 config.append("sp=%s.m_axi_gmem0:DDR[%d]" % (instance_name, 0))
             # connect streams
-            if consumer is not None:
-                stream_producers[node.output[0]] = instance_name
             if producer is not None:
-                config.append(
-                    "stream_connect=%s.m_axis:%s.s_axis"
-                    % (stream_producers[node.input[0]], instance_name)
-                )
+                for i in range(len(node.input)):
+                    producer = model.find_producer(node.input[i])
+                    if producer is not None:
+                        j = list(producer.output).index(node.input[i])
+                        config.append(
+                            "stream_connect=%s.m_axis_%d:%s.s_axis_%d"
+                            % (producer.name, j, node.name, i)
+                        )
 
         # create a temporary folder for the project
         link_dir = make_build_dir(prefix="vitis_link_proj_")
@@ -264,6 +269,7 @@ class VitisBuild(Transformation):
                 InsertTLastMarker(both=True, external=False, dynamic=False)
             )
             kernel_model = kernel_model.transform(GiveUniqueNodeNames())
+            kernel_model.save(dataflow_model_filename)
             kernel_model = kernel_model.transform(
                 PrepareIP(self.fpga_part, self.period_ns)
             )

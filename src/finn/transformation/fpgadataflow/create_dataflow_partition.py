@@ -104,7 +104,7 @@ class CreateDataflowPartition(Transformation):
                     fc_weight_vi = df_model.get_tensor_valueinfo(
                         fc_extw_nodes[i].input[1]
                     )
-                    df_model.graph.input.insert(i, fc_weight_vi)
+                    df_model.graph.input.insert(i + 1, fc_weight_vi)
                     extra_df_inputs.append(fc_extw_nodes[i].input[1])
 
                 # save model

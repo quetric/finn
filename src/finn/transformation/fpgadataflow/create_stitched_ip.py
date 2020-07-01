@@ -62,15 +62,111 @@ class CreateStitchedIP(Transformation):
                 """The chosen frequency may lead to failure due to clock divider
                 constraints."""
             )
+        self.has_axilite = False
+        self.has_aximm = False
+        self.has_m_axis = False
+        self.m_axis_idx = 0
+        self.has_s_axis = False
+        self.s_axis_idx = 0
+        self.clock_reset_are_external = False
+        self.create_cmds = []
+        self.connect_cmds = []
+
+    def connect_clk_rst(self, node):
+        inst_name = node.name
+        node_inst = getCustomOp(node)
+        clock_intf_name = node_inst.get_verilog_top_module_intf_names()["clk"][0]
+        reset_intf_name = node_inst.get_verilog_top_module_intf_names()["rst"][0]
+        # make clock and reset external, if they aren't already
+        if not self.clock_reset_are_external:
+            self.connect_cmds.append(
+                "make_bd_pins_external [get_bd_pins %s/%s]"
+                % (inst_name, clock_intf_name)
+            )
+            self.connect_cmds.append("set_property name ap_clk [get_bd_ports ap_clk_0]")
+            self.connect_cmds.append(
+                "make_bd_pins_external [get_bd_pins %s/%s]"
+                % (inst_name, reset_intf_name)
+            )
+            self.connect_cmds.append(
+                "set_property name ap_rst_n [get_bd_ports ap_rst_n_0]"
+            )
+            self.clock_reset_are_external = True
+        # otherwise connect clock and reset
+        else:
+            self.connect_cmds.append(
+                "connect_bd_net [get_bd_ports ap_rst_n] [get_bd_pins %s/%s]"
+                % (inst_name, reset_intf_name)
+            )
+            self.connect_cmds.append(
+                "connect_bd_net [get_bd_ports ap_clk] [get_bd_pins %s/%s]"
+                % (inst_name, clock_intf_name)
+            )
+
+    def connect_axi(self, node):
+        inst_name = node.name
+        node_inst = getCustomOp(node)
+        axilite_intf_name = node_inst.get_verilog_top_module_intf_names()["axilite"]
+        aximm_intf_name = node_inst.get_verilog_top_module_intf_names()["aximm"]
+        if len(axilite_intf_name) != 0:
+            self.connect_cmds.append(
+                "make_bd_intf_pins_external "
+                "[get_bd_intf_pins %s/%s]" % (inst_name, axilite_intf_name[0])
+            )
+            self.connect_cmds.append(
+                "set_property name s_axi_control " "[get_bd_intf_ports s_axi_control_0]"
+            )
+            assert (
+                self.has_axilite is False
+            ), "Currently limited to one slave AXI-Stream"
+            self.has_axilite = True
+        if len(aximm_intf_name) != 0:
+            self.connect_cmds.append(
+                "make_bd_intf_pins_external [get_bd_intf_pins %s/%s]"
+                % (inst_name, aximm_intf_name[0])
+            )
+            self.connect_cmds.append(
+                "set_property name m_axi_gmem0 [get_bd_intf_ports m_axi_gmem_0]"
+            )
+            assert self.has_aximm is False, "Currently limited to one AXI-MM interface"
+            self.has_aximm = True
+
+    def connect_m_axis_external(self, node):
+        inst_name = node.name
+        node_inst = getCustomOp(node)
+        output_intf_names = node_inst.get_verilog_top_module_intf_names()["m_axis"]
+        # make output axis external
+        for output_intf_name in output_intf_names:
+            self.connect_cmds.append(
+                "make_bd_intf_pins_external [get_bd_intf_pins %s/%s]"
+                % (inst_name, output_intf_name)
+            )
+            self.connect_cmds.append(
+                "set_property name m_axis_%d [get_bd_intf_ports %s_0]"
+                % (self.m_axis_idx, output_intf_name)
+            )
+            self.has_m_axis = True
+            self.m_axis_idx += 1
+
+    def connect_s_axis_external(self, node):
+        inst_name = node.name
+        node_inst = getCustomOp(node)
+        input_intf_names = node_inst.get_verilog_top_module_intf_names()["s_axis"]
+        # make input axis external
+        for input_intf_name in input_intf_names:
+            self.connect_cmds.append(
+                "make_bd_intf_pins_external [get_bd_intf_pins %s/%s]"
+                % (inst_name, input_intf_name)
+            )
+            self.connect_cmds.append(
+                "set_property name s_axis_%d [get_bd_intf_ports %s_0]"
+                % (self.s_axis_idx, input_intf_name)
+            )
+            self.has_s_axis = True
+            self.s_axis_idx += 1
 
     def apply(self, model):
         ip_dirs = ["list"]
-        create_cmds = []
-        connect_cmds = []
-        has_axilite = False
-        has_aximm = False
-        has_m_axis = False
-        has_s_axis = False
         # ensure that all nodes are fpgadataflow, and that IPs are generated
         for node in model.graph.node:
             assert node.domain == "finn", 'Node domain is not set to "finn"'
@@ -88,100 +184,46 @@ class CreateStitchedIP(Transformation):
             vlnv = node_inst.get_nodeattr("ip_vlnv")
             inst_name = node.name
             create_cmd = "create_bd_cell -type ip -vlnv %s %s" % (vlnv, inst_name)
-            create_cmds += [create_cmd]
-            # TODO nonlinear topologies: check this for all inputs
+            self.create_cmds += [create_cmd]
             my_producer = model.find_producer(node.input[0])
+            self.connect_clk_rst(node)
+            self.connect_axi(node)
             if my_producer is None:
                 # first node in graph
-                # make clock and reset external
-                connect_cmds.append(
-                    "make_bd_pins_external [get_bd_pins %s/ap_clk]" % inst_name
-                )
-                connect_cmds.append("set_property name ap_clk [get_bd_ports ap_clk_0]")
-                connect_cmds.append(
-                    "make_bd_pins_external [get_bd_pins %s/ap_rst_n]" % inst_name
-                )
-                connect_cmds.append(
-                    "set_property name ap_rst_n [get_bd_ports ap_rst_n_0]"
-                )
+                self.connect_s_axis_external(node)
                 if node.op_type == "TLastMarker":
                     assert (
                         node_inst.get_nodeattr("Direction") == "in"
                     ), """Output TLastMarker incorrect direction"""
-                    # make output external
-                    connect_cmds.append(
-                        "make_bd_intf_pins_external [get_bd_intf_pins %s/in0]"
-                        % inst_name
-                    )
-                    connect_cmds.append(
-                        "set_property name s_axis [get_bd_intf_ports in0_0]"
-                    )
-                    assert (
-                        has_s_axis is False
-                    ), "Currently limited to one slave AXI-Stream"
-                    has_s_axis = True
                 elif node.op_type == "IODMA":
                     assert (
                         node_inst.get_nodeattr("direction") == "in"
                     ), """Input DMA incorrect direction"""
-                    # make output external
-                    connect_cmds.append(
-                        "make_bd_intf_pins_external "
-                        "[get_bd_intf_pins %s/s_axi_control]" % inst_name
-                    )
-                    connect_cmds.append(
-                        "set_property name s_axi_control "
-                        "[get_bd_intf_ports s_axi_control_0]"
-                    )
-                    assert (
-                        has_axilite is False
-                    ), "Currently limited to one slave AXI-Stream"
-                    has_axilite = True
-                    connect_cmds.append(
-                        "make_bd_intf_pins_external [get_bd_intf_pins %s/m_axi_gmem]"
-                        % inst_name
-                    )
-                    connect_cmds.append(
-                        "set_property name m_axi_gmem0 [get_bd_intf_ports m_axi_gmem_0]"
-                    )
-                    assert (
-                        has_aximm is False
-                    ), "Currently limited to one AXI-MM interface"
-                    has_aximm = True
-                else:
-                    # make input external
-                    connect_cmds.append(
-                        "make_bd_intf_pins_external [get_bd_intf_pins %s/in0_V_V]"
-                        % inst_name
-                    )
-                    connect_cmds.append(
-                        "set_property name s_axis [get_bd_intf_ports in0_V_V_0]"
-                    )
-                    assert (
-                        has_s_axis is False
-                    ), "Currently limited to one slave AXI-Stream"
-                    has_s_axis = True
             else:
                 # intermediate node
-                # wire up global clock and reset
-                connect_cmds.append(
-                    "connect_bd_net [get_bd_ports ap_rst_n] [get_bd_pins %s/ap_rst_n]"
-                    % inst_name
-                )
-                connect_cmds.append(
-                    "connect_bd_net [get_bd_ports ap_clk] [get_bd_pins %s/ap_clk]"
-                    % inst_name
-                )
-                # wire up input to previous output
-                # TODO nonlinear topologies: loop over all inputs
-                my_in_name = "%s/in0_V_V" % (inst_name)
-                prev_out_name = "%s/out_V_V" % (my_producer.name)
-                connect_cmds.append(
-                    "connect_bd_intf_net [get_bd_intf_pins %s] [get_bd_intf_pins %s]"
-                    % (prev_out_name, my_in_name)
-                )
-            if model.find_consumer(node.output[0]) is None:
+                # wire up input(s) to previous node output(s)
+                # foreach input
+                #     find producer
+                #     find index of producer output connected to our target input
+                #     get names of hdl interfaces for input and producer output
+                #     issue a TCL directive to connect input to output
+                for i in range(len(node.input)):
+                    producer = model.find_producer(node.input[i])
+                    j = list(producer.output).index(node.input[i])
+                    src_intf_name = getCustomOp(
+                        producer
+                    ).get_verilog_top_module_intf_names()["m_axis"][j]
+                    dst_intf_name = node_inst.get_verilog_top_module_intf_names()[
+                        "s_axis"
+                    ][i]
+                    self.connect_cmds.append(
+                        "connect_bd_intf_net [get_bd_intf_pins %s/%s] "
+                        "[get_bd_intf_pins %s/%s]"
+                        % (producer.name, src_intf_name, node.name, dst_intf_name)
+                    )
+            if model.find_consumers(node.output[0]) is None:
                 # last node in graph
+                self.connect_m_axis_external(node)
                 # ensure it is a TLastMarker to have a valid TLast signal
                 assert (
                     node.op_type == "TLastMarker" or node.op_type == "IODMA"
@@ -192,60 +234,10 @@ class CreateStitchedIP(Transformation):
                     assert (
                         node_inst.get_nodeattr("Direction") == "out"
                     ), """Output TLastMarker incorrect direction"""
-                    # make output external
-                    connect_cmds.append(
-                        "make_bd_intf_pins_external [get_bd_intf_pins %s/out_r]"
-                        % inst_name
-                    )
-                    connect_cmds.append(
-                        "set_property name m_axis [get_bd_intf_ports out_r_0]"
-                    )
-                    assert (
-                        has_m_axis is False
-                    ), "Currently limited to one master AXI-Stream"
-                    has_m_axis = True
-                    if node_inst.get_nodeattr("DynIters") == 1:
-                        # make AXI lite IF external
-                        connect_cmds.append(
-                            "make_bd_intf_pins_external "
-                            "[get_bd_intf_pins %s/s_axi_control]" % inst_name
-                        )
-                        connect_cmds.append(
-                            "set_property name s_axi_control "
-                            "[get_bd_intf_ports s_axi_control_0]"
-                        )
-                        assert (
-                            has_axilite is False
-                        ), "Currently limited to one slave AXI-Stream"
-                        has_axilite = True
                 elif node.op_type == "IODMA":
                     assert (
                         node_inst.get_nodeattr("direction") == "out"
                     ), """Output DMA incorrect direction"""
-                    # make output external
-                    connect_cmds.append(
-                        "make_bd_intf_pins_external "
-                        "[get_bd_intf_pins %s/s_axi_control]" % inst_name
-                    )
-                    connect_cmds.append(
-                        "set_property name s_axi_control "
-                        "[get_bd_intf_ports s_axi_control_0]"
-                    )
-                    assert (
-                        has_axilite is False
-                    ), "Currently limited to one slave AXI-Stream"
-                    has_axilite = True
-                    connect_cmds.append(
-                        "make_bd_intf_pins_external [get_bd_intf_pins %s/m_axi_gmem]"
-                        % inst_name
-                    )
-                    connect_cmds.append(
-                        "set_property name m_axi_gmem0 [get_bd_intf_ports m_axi_gmem_0]"
-                    )
-                    assert (
-                        has_aximm is False
-                    ), "Currently limited to one AXI-MM interface"
-                    has_aximm = True
 
         # create a temporary folder for the project
         prjname = "finn_vivado_stitch_proj"
@@ -265,8 +257,8 @@ class CreateStitchedIP(Transformation):
         # create block design and instantiate all layers
         block_name = self.ip_name
         tcl.append('create_bd_design "%s"' % block_name)
-        tcl.extend(create_cmds)
-        tcl.extend(connect_cmds)
+        tcl.extend(self.create_cmds)
+        tcl.extend(self.connect_cmds)
         fclk_mhz = 1 / (self.clk_ns * 0.001)
         fclk_hz = fclk_mhz * 1000000
         model.set_metadata_prop("clk_ns", str(self.clk_ns))
