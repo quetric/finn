@@ -239,3 +239,15 @@ class TLastMarker(HLSCustomOp):
         self.code_gen_dict["$STREAMDECLARATIONS$"].append(
             'hls::stream<OutDType> out ("out");'
         )
+
+    def get_verilog_top_module_intf_names(self):
+        intf_names = super().get_verilog_top_module_intf_names()
+        if self.get_nodeattr("Direction") == "in":
+            intf_names["s_axis"] = ["in0"]
+            intf_names["m_axis"] = ["out_V_V"]
+        else:
+            intf_names["s_axis"] = ["in0_V_V"]
+            intf_names["m_axis"] = ["out_r"]
+        if self.get_nodeattr("DynIters") == 1:
+            intf_names["axilite"] = ["s_axi_control"]
+        return intf_names

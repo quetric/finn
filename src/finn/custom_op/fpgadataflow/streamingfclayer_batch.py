@@ -302,7 +302,10 @@ class StreamingFCLayer_Batch(HLSCustomOp):
 
     def get_weightstream_width(self):
         """Returns weight stream width. Used only in decoupled mode."""
-        if self.get_nodeattr("mem_mode") == "decoupled":
+        if (
+            self.get_nodeattr("mem_mode") == "decoupled"
+            or self.get_nodeattr("mem_mode") == "external"
+        ):
             pe = self.get_nodeattr("PE")
             simd = self.get_nodeattr("SIMD")
             wp = self.get_weight_datatype().bitwidth()
@@ -1111,3 +1114,10 @@ class StreamingFCLayer_Batch(HLSCustomOp):
             )
             self.set_nodeattr("ip_vlnv", vlnv)
             self.code_gen_dict.clear()
+
+    def get_verilog_top_module_intf_names(self):
+        intf_names = super().get_verilog_top_module_intf_names()
+        mem_mode = self.get_nodeattr("mem_mode")
+        if mem_mode == "external":
+            intf_names["s_axis"] = ["in0_V_V", "weights_V_V"]
+        return intf_names
