@@ -162,6 +162,7 @@ class VitisLink(Transformation):
         object_files = []
         idma_idx = 0
         odma_idx = 0
+        instance_names = {}
         for node in model.graph.node:
             assert node.op_type == "StreamingDataflowPartition", "Invalid link graph"
             sdp_node = getCustomOp(node)
@@ -182,21 +183,23 @@ class VitisLink(Transformation):
             # name kernels connected to graph inputs as idmaxx
             # name kernels connected to graph inputs as odmaxx
             if producer is None:
-                instance_name = "idma" + str(idma_idx)
-                config.append("nk=%s:1:%s" % (node.name, instance_name))
+                instance_names[node.name] = "idma" + str(idma_idx)
+                config.append("nk=%s:1:%s" % (node.name, instance_names[node.name]))
                 idma_idx += 1
             elif consumer is None:
-                instance_name = "odma" + str(odma_idx)
-                config.append("nk=%s:1:%s" % (node.name, instance_name))
+                instance_names[node.name] = "odma" + str(odma_idx)
+                config.append("nk=%s:1:%s" % (node.name, instance_names[node.name]))
                 odma_idx += 1
             else:
-                instance_name = node.name
-                config.append("nk=%s:1:%s" % (node.name, instance_name))
+                instance_names[node.name] = node.name
+                config.append("nk=%s:1:%s" % (node.name, instance_names[node.name]))
             # assign SLRs
-            config.append("slr=%s:SLR0" % instance_name)
+            config.append("slr=%s:SLR0" % instance_names[node.name])
             # assign memory banks
             if producer is None or consumer is None:
-                config.append("sp=%s.m_axi_gmem0:DDR[%d]" % (instance_name, 0))
+                config.append(
+                    "sp=%s.m_axi_gmem0:DDR[%d]" % (instance_names[node.name], 0)
+                )
             # connect streams
             if producer is not None:
                 for i in range(len(node.input)):
@@ -205,7 +208,12 @@ class VitisLink(Transformation):
                         j = list(producer.output).index(node.input[i])
                         config.append(
                             "stream_connect=%s.m_axis_%d:%s.s_axis_%d"
-                            % (producer.name, j, node.name, i)
+                            % (
+                                instance_names[producer.name],
+                                j,
+                                instance_names[node.name],
+                                i,
+                            )
                         )
 
         # create a temporary folder for the project
