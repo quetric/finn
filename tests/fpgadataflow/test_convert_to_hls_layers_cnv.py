@@ -114,7 +114,7 @@ def test_convert_to_hls_layers_cnv_w1a1(fused_activation):
         assert len(finn_nodes) == 18
     else:
         assert len(finn_nodes) == 26
-        thr_nodes = model.get_nodes_by_op_type("ChannelwiseOp_Batch")
+        thr_nodes = model.get_nodes_by_op_type("Thresholding_Batch")
         assert len(thr_nodes) == 8
     non_finn_nodes = model.get_non_finn_nodes()
     assert len(non_finn_nodes) == 4
