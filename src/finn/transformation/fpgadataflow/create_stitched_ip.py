@@ -195,7 +195,10 @@ class CreateStitchedIP(Transformation):
                     assert (
                         node_inst.get_nodeattr("Direction") == "in"
                     ), """Output TLastMarker incorrect direction"""
-                elif node.op_type == "IODMA":
+                elif (
+                    node.op_type == "IODMA"
+                    and model.find_consumers(node.output[0]) is not None
+                ):
                     assert (
                         node_inst.get_nodeattr("direction") == "in"
                     ), """Input DMA incorrect direction"""
