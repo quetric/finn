@@ -536,6 +536,5 @@ class AbsorbConsecutiveTransposes(Transformation):
 
                             graph_modified = True
         if graph_modified:
-            model = model.transform(InferShapes())
             model = model.transform(InferDataTypes())
         return (model, graph_modified)
