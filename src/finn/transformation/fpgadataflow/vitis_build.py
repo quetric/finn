@@ -255,6 +255,7 @@ class VitisBuild(Transformation):
         # first infer layouts
         model = model.transform(InferDataLayouts())
         # prepare at global level, then break up into kernels
+        model.set_metadata_prop("clk_ns", str(self.period_ns))
         prep_transforms = [
             MakePYNQDriver(),
             InsertIODMA(512),
