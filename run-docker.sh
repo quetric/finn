@@ -64,6 +64,11 @@ if [ -z "$VITIS_PATH" ];then
         recho "FINN functionality depending on Vitis will not be available."
 fi
 
+
+if [ -z "$PLATFORM_REPO_PATHS" ];then
+        recho "Please set PLATFORM_REPO_PATHS pointing to Vitis platform files (DSAs)."
+fi
+
 DOCKER_GID=$(id -g)
 DOCKER_GNAME=$(id -gn)
 DOCKER_UNAME=$(id -un)
@@ -151,9 +156,11 @@ docker run -t --rm --name $DOCKER_INST_NAME $DOCKER_INTERACTIVE --init \
 -v $BUILD_LOCAL:$BUILD_LOCAL \
 -v $VIVADO_PATH:$VIVADO_PATH \
 -v $VITIS_PATH:$VITIS_PATH \
+-v $PLATFORM_REPO_PATHS:/workspace/finn/vitis_platforms \
 -v $FINN_SSH_KEY_DIR:/home/$DOCKER_UNAME/.ssh \
 -e VIVADO_PATH=$VIVADO_PATH \
 -e VITIS_PATH=$VITIS_PATH \
+-e PLATFORM_REPO_PATHS="/workspace/finn/vitis_platforms" \
 -e FINN_INST_NAME=$DOCKER_INST_NAME \
 -e FINN_ROOT="/workspace/finn" \
 -e VIVADO_IP_CACHE="$VIVADO_IP_CACHE" \
