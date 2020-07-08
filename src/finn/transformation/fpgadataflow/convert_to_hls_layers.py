@@ -879,64 +879,6 @@ class InferDuplicateStreamsLayer(Transformation):
         return (model, graph_modified)
 
 
-class InferLabelSelectLayer(Transformation):
-    """Convert any TopK into a LabelSelect HLS layer."""
-
-    def apply(self, model):
-        graph = model.graph
-        node_ind = 0
-        graph_modified = False
-        for node in graph.node:
-            node_ind += 1
-            if node.op_type == "TopK":
-                fc_input = node.input[0]
-                k_input = node.input[1]
-                val_output = node.output[0]
-                idx_output = node.output[1]
-                fc_in_shape = model.get_tensor_shape(fc_input)
-
-                idt = model.get_tensor_datatype(fc_input)
-
-                # skip conversion for layers with float input
-                if not idt.is_integer():
-                    continue
-
-                # skip conversion for if value output is connected (not supported)
-                if model.find_consumer(val_output) is not None:
-                    continue
-
-                num_labels = int(fc_in_shape[-1])
-                # create node with no parallelization first
-                pe = 1
-                assert (
-                    num_labels % pe == 0
-                ), "Requirement Labels divisable by PE is violated."
-
-                k = model.get_initializer(k_input)[0]
-
-                # create and insert new StreamingFCLayer node
-                new_node = helper.make_node(
-                    "LabelSelect_Batch",
-                    [fc_input],
-                    [idx_output],
-                    domain="finn",
-                    backend="fpgadataflow",
-                    Labels=num_labels,
-                    PE=pe,
-                    K=k,
-                    inputDataType=idt.name,
-                )
-                graph.node.insert(node_ind, new_node)
-                # remove old node
-                graph.node.remove(node)
-                graph_modified = True
-
-        if graph_modified:
-            model = model.transform(InferShapes())
-            model = model.transform(InferDataTypes())
-        return (model, graph_modified)
-
-
 class InferChannelwiseLinearLayer(Transformation):
     """Convert any channel-wise Add/Mul into a HLS layer."""
 
@@ -1082,6 +1024,64 @@ class InferChannelwiseLinearLayer(Transformation):
                     numInputVectors=list(ll_in_shape[:-1]),
                 )
                 graph.node.insert(insert_point, new_node)
+                # remove old node
+                graph.node.remove(node)
+                graph_modified = True
+
+        if graph_modified:
+            model = model.transform(InferShapes())
+            model = model.transform(InferDataTypes())
+        return (model, graph_modified)
+
+
+class InferLabelSelectLayer(Transformation):
+    """Convert any TopK into a LabelSelect HLS layer."""
+
+    def apply(self, model):
+        graph = model.graph
+        node_ind = 0
+        graph_modified = False
+        for node in graph.node:
+            node_ind += 1
+            if node.op_type == "TopK":
+                fc_input = node.input[0]
+                k_input = node.input[1]
+                val_output = node.output[0]
+                idx_output = node.output[1]
+                fc_in_shape = model.get_tensor_shape(fc_input)
+
+                idt = model.get_tensor_datatype(fc_input)
+
+                # skip conversion for layers with float input
+                if not idt.is_integer():
+                    continue
+
+                # skip conversion for if value output is connected (not supported)
+                if model.find_consumer(val_output) is not None:
+                    continue
+
+                num_labels = int(fc_in_shape[-1])
+                # create node with no parallelization first
+                pe = 1
+                assert (
+                    num_labels % pe == 0
+                ), "Requirement Labels divisable by PE is violated."
+
+                k = model.get_initializer(k_input)[0]
+
+                # create and insert new StreamingFCLayer node
+                new_node = helper.make_node(
+                    "LabelSelect_Batch",
+                    [fc_input],
+                    [idx_output],
+                    domain="finn",
+                    backend="fpgadataflow",
+                    Labels=num_labels,
+                    PE=pe,
+                    K=k,
+                    inputDataType=idt.name,
+                )
+                graph.node.insert(node_ind, new_node)
                 # remove old node
                 graph.node.remove(node)
                 graph_modified = True
