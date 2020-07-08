@@ -33,8 +33,9 @@ class TLastMarker(HLSCustomOp):
     """Node that adds/removes AXI stream TLAST signals where needed. Its behavior
     is transparent in node-by-node execution, only visible in IP-stitched rtlsim or
     actual hardware.
-    This node  may be needed at the end of the network to signal a DMA write (needed by the
-    FINN PYNQ shell) or at the beginning to remove the end-of-burst from DMA read."""
+    This node  may be needed at the end of the network to signal a DMA write
+    (needed by the FINN PYNQ shell) or at the beginning to remove the end-of-burst
+    from DMA read."""
 
     def __init__(self, onnx_node):
         super().__init__(onnx_node)
@@ -51,8 +52,7 @@ class TLastMarker(HLSCustomOp):
             "StreamWidth": ("i", True, 0),
             # width of individual element in stream, in bits
             "ElemWidth": ("i", True, 0),
-            # Protocol: external or internal
-            # Vitis docs recommend using qdma_axis for external, ap_axiu for internal
+            # Protocol
             "Protocol": ("s", False, "external"),
         }
         my_attrs.update(super().get_nodeattr_types())
@@ -239,3 +239,15 @@ class TLastMarker(HLSCustomOp):
         self.code_gen_dict["$STREAMDECLARATIONS$"].append(
             'hls::stream<OutDType> out ("out");'
         )
+
+    def get_verilog_top_module_intf_names(self):
+        intf_names = super().get_verilog_top_module_intf_names()
+        if self.get_nodeattr("Direction") == "in":
+            intf_names["s_axis"] = ["in0"]
+            intf_names["m_axis"] = ["out_V_V"]
+        else:
+            intf_names["s_axis"] = ["in0_V_V"]
+            intf_names["m_axis"] = ["out_r"]
+        if self.get_nodeattr("DynIters") == 1:
+            intf_names["axilite"] = ["s_axi_control"]
+        return intf_names

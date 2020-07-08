@@ -70,10 +70,12 @@ from finn.transformation.general import (
 from finn.transformation.infer_datatypes import InferDataTypes
 from finn.transformation.infer_shapes import InferShapes
 from finn.transformation.streamline import Streamline
-from finn.util.basic import pynq_part_map
+from finn.util.basic import pynq_part_map, alveo_part_map, alveo_default_platform
 from finn.util.test import get_test_model_trained, load_test_checkpoint_or_skip
 from finn.transformation.fpgadataflow.annotate_resources import AnnotateResources
 from finn.transformation.fpgadataflow.prepare_rtlsim import PrepareRTLSim
+from finn.transformation.fpgadataflow.vitis_build import VitisBuild
+
 
 build_dir = "/tmp/" + os.environ["FINN_INST_NAME"]
 test_pynq_board = os.getenv("PYNQ_BOARD", default="Pynq-Z1")
@@ -155,6 +157,38 @@ def test_end2end_tfc_w2a2_fold_and_tlastmarker():
     model = model.transform(GiveUniqueNodeNames())
     model = model.transform(AnnotateResources("estimate"))
     model.save(build_dir + "/end2end_tfc_w2a2_folded.onnx")
+
+
+# board
+@pytest.mark.parametrize("board", ["U250"])
+# clock period
+@pytest.mark.parametrize("period_ns", [5])
+@pytest.mark.slow
+@pytest.mark.vivado
+def test_end2end_tfc_w2a2_vitis(board, period_ns):
+    platform = alveo_default_platform[board]
+    fpga_part = alveo_part_map[board]
+    model = load_test_checkpoint_or_skip(
+        build_dir + "/end2end_tfc_w2a2_dataflow_model.onnx"
+    )
+    fc_layers = model.get_nodes_by_op_type("StreamingFCLayer_Batch")
+    # (PE, SIMD, in_fifo_depth, out_fifo_depth, ramstyle) for each layer
+    config = [
+        (16, 49, 16, 64, "block"),
+        (8, 8, 64, 64, "auto"),
+        (8, 8, 64, 64, "auto"),
+        (10, 8, 64, 10, "distributed"),
+    ]
+    for fcl, (pe, simd, ififo, ofifo, ramstyle) in zip(fc_layers, config):
+        fcl_inst = getCustomOp(fcl)
+        fcl_inst.set_nodeattr("PE", pe)
+        fcl_inst.set_nodeattr("SIMD", simd)
+        fcl_inst.set_nodeattr("inFIFODepth", ififo)
+        fcl_inst.set_nodeattr("outFIFODepth", ofifo)
+        fcl_inst.set_nodeattr("ram_style", ramstyle)
+
+    model = model.transform(VitisBuild(fpga_part, period_ns, platform))
+    model.save(build_dir + "/end2end_tfc_w2a2_dataflow_model_vitis.onnx")
 
 
 @pytest.mark.slow

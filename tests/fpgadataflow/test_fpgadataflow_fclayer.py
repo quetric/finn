@@ -74,6 +74,7 @@ def make_single_fclayer_modelwrapper(W, pe, simd, wdt, idt, odt, T=None, tdt=Non
 
     inp = helper.make_tensor_value_info("inp", TensorProto.FLOAT, [1, mw])
     outp = helper.make_tensor_value_info("outp", TensorProto.FLOAT, [1, mh])
+
     if T is not None:
         no_act = 0
         node_inp_list = ["inp", "weights", "thresh"]
@@ -134,7 +135,7 @@ def prepare_inputs(input_tensor, idt, wdt):
 
 
 # mem_mode: const or decoupled
-@pytest.mark.parametrize("mem_mode", ["const", "decoupled"])
+@pytest.mark.parametrize("mem_mode", ["const", "decoupled", "external"])
 # activation: None or DataType
 @pytest.mark.parametrize("act", [None, DataType.BIPOLAR, DataType.INT4])
 # weight datatype
@@ -221,7 +222,7 @@ def test_fpgadataflow_fclayer_cppsim(mem_mode, idt, wdt, act, nf, sf, mw, mh):
 
 
 # mem_mode: const or decoupled
-@pytest.mark.parametrize("mem_mode", ["const", "decoupled"])
+@pytest.mark.parametrize("mem_mode", ["const", "decoupled", "external"])
 # activation: None or DataType
 @pytest.mark.parametrize("act", [None, DataType.BIPOLAR, DataType.INT4])
 # weight datatype
