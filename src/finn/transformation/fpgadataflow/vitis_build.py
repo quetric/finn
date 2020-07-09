@@ -284,6 +284,26 @@ class VitisBuild(Transformation):
             kernel_model = kernel_model.transform(GiveReadableTensorNames())
             kernel_model = kernel_model.transform(RemoveStaticGraphInputs())
             kernel_model = kernel_model.transform(RemoveUnusedTensors())
+
+            # Quick fix for inserting tlastmarker for external weights
+            model = kernel_model
+            for vi in model.graph.value_info:
+                consumers = model.find_consumers(vi.name)
+
+                if (
+                    consumers is not None
+                    and len(consumers) == 1
+                    and consumers[0].op_type == "StreamingFCLayer_Batch"
+                ):
+                    node = consumers[0]
+                    custom_op = getCustomOp(node)
+                    inp_idx = list(node.input).index(vi.name)
+                    if inp_idx != 1:
+                        continue
+                    if custom_op.get_nodeattr("mem_mode") == "external":
+                        model.graph.input.append(vi)
+                        model.graph.value_info.remove(vi)
+            kernel_model = model
             kernel_model = kernel_model.transform(
                 InsertTLastMarker(both=True, external=False, dynamic=False)
             )
