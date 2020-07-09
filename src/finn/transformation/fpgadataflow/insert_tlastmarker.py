@@ -128,6 +128,7 @@ class InsertTLastMarker(Transformation):
                             and inp_idx == 1
                         ):
                             stream_width = int(custom_op.get_weightstream_width())
+                            num_iters = int(custom_op.calc_wmem())
                         elif first_node.op_type == "AddStreams_Batch" and inp_idx == 1:
                             stream_width = int(custom_op.get_instream_width())
                         else:
