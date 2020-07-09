@@ -48,9 +48,15 @@ from finn.transformation.fpgadataflow.replace_verilog_relpaths import (
 from finn.transformation.fpgadataflow.create_stitched_ip import CreateStitchedIP
 from finn.transformation.fpgadataflow.floorplan import Floorplan
 from finn.transformation.fpgadataflow.make_pynq_driver import MakePYNQDriver
-from finn.transformation.general import GiveReadableTensorNames, GiveUniqueNodeNames
 from finn.util.basic import make_build_dir
 from finn.transformation.infer_data_layouts import InferDataLayouts
+
+from finn.transformation.general import (
+    GiveReadableTensorNames,
+    GiveUniqueNodeNames,
+    RemoveUnusedTensors,
+    RemoveStaticGraphInputs,
+)
 
 
 class CreateVitisXO(Transformation):
@@ -274,6 +280,10 @@ class VitisBuild(Transformation):
             dataflow_model_filename = sdp_node.get_nodeattr("model")
             kernel_model = ModelWrapper(dataflow_model_filename)
             kernel_model = kernel_model.transform(InsertFIFO())
+            kernel_model = kernel_model.transform(GiveUniqueNodeNames())
+            kernel_model = kernel_model.transform(GiveReadableTensorNames())
+            kernel_model = kernel_model.transform(RemoveStaticGraphInputs())
+            kernel_model = kernel_model.transform(RemoveUnusedTensors())
             kernel_model = kernel_model.transform(
                 InsertTLastMarker(both=True, external=False, dynamic=False)
             )
