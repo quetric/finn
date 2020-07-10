@@ -55,7 +55,6 @@ from finn.transformation.general import (
     GiveReadableTensorNames,
     GiveUniqueNodeNames,
     RemoveUnusedTensors,
-    RemoveStaticGraphInputs,
 )
 
 
@@ -248,6 +247,36 @@ class VitisLink(Transformation):
         return (model, False)
 
 
+class ExposeExternalParams(Transformation):
+    """
+    Removes inputs externally supplied from graph.value_info and
+    inserts it in graph.input as required to properly transform the model
+    from Vitis build
+    """
+
+    def apply(self, model):
+        supported_op_types = ["StreamingFCLayer_Batch"]
+        for vi in model.graph.value_info:
+            consumers = model.find_consumers(vi.name)
+
+            if (
+                consumers is not None
+                and len(consumers) == 1
+                and consumers[0].op_type in supported_op_types
+            ):
+                node = consumers[0]
+                custom_op = getCustomOp(node)
+                inp_idx = list(node.input).index(vi.name)
+                if inp_idx != 1:
+                    continue
+                if custom_op.get_nodeattr("mem_mode") == "external":
+                    model.graph.input.append(vi)
+                    model.graph.value_info.remove(vi)
+
+        # one iteration is enough
+        return model, False
+
+
 class VitisBuild(Transformation):
     """Best-effort attempt at building the accelerator with Vitis."""
 
@@ -282,28 +311,9 @@ class VitisBuild(Transformation):
             kernel_model = kernel_model.transform(InsertFIFO())
             kernel_model = kernel_model.transform(GiveUniqueNodeNames())
             kernel_model = kernel_model.transform(GiveReadableTensorNames())
-            kernel_model = kernel_model.transform(RemoveStaticGraphInputs())
             kernel_model = kernel_model.transform(RemoveUnusedTensors())
+            kernel_model = kernel_model.transform(ExposeExternalParams())
 
-            # Quick fix for inserting tlastmarker for external weights
-            model = kernel_model
-            for vi in model.graph.value_info:
-                consumers = model.find_consumers(vi.name)
-
-                if (
-                    consumers is not None
-                    and len(consumers) == 1
-                    and consumers[0].op_type == "StreamingFCLayer_Batch"
-                ):
-                    node = consumers[0]
-                    custom_op = getCustomOp(node)
-                    inp_idx = list(node.input).index(vi.name)
-                    if inp_idx != 1:
-                        continue
-                    if custom_op.get_nodeattr("mem_mode") == "external":
-                        model.graph.input.append(vi)
-                        model.graph.value_info.remove(vi)
-            kernel_model = model
             kernel_model = kernel_model.transform(
                 InsertTLastMarker(both=True, external=False, dynamic=False)
             )
@@ -312,13 +322,16 @@ class VitisBuild(Transformation):
             kernel_model = kernel_model.transform(
                 PrepareIP(self.fpga_part, self.period_ns)
             )
+            kernel_model.save(dataflow_model_filename)
             kernel_model = kernel_model.transform(HLSSynthIP())
             kernel_model = kernel_model.transform(ReplaceVerilogRelPaths())
+            kernel_model.save(dataflow_model_filename)
             kernel_model = kernel_model.transform(
                 CreateStitchedIP(
                     self.fpga_part, self.period_ns, sdp_node.onnx_node.name, True
                 )
             )
+            kernel_model.save(dataflow_model_filename)
             kernel_model = kernel_model.transform(
                 CreateVitisXO(sdp_node.onnx_node.name)
             )
