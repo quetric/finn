@@ -30,6 +30,7 @@ import os
 import warnings
 import subprocess
 
+import numpy as np
 from finn.transformation import Transformation
 from finn.util.basic import get_by_name, make_build_dir
 from finn.custom_op.registry import getCustomOp
@@ -207,6 +208,8 @@ class CreateStitchedIP(Transformation):
                 create_cmd = "create_bd_cell -type ip -vlnv %s %s" % (vlnv, inst_name)
                 self.create_cmds += [create_cmd]
                 fifo_depth = node_inst.get_nodeattr("depth")
+                fifo_depth = 16 if fifo_depth < 16 else fifo_depth
+                fifo_depth = 2 ** np.ceil(np.log2(fifo_depth))
                 create_cmd = (
                     "set_property -dict [list CONFIG.FIFO_DEPTH {%d}] "
                     "[get_bd_cells %s]" % (fifo_depth, inst_name)
