@@ -84,8 +84,12 @@ class CreateStitchedIP(Transformation):
     def connect_clk_rst(self, node):
         inst_name = node.name
         node_inst = getCustomOp(node)
-        clock_intf_name = node_inst.get_verilog_top_module_intf_names()["clk"][0]
-        reset_intf_name = node_inst.get_verilog_top_module_intf_names()["rst"][0]
+        if node.op_type == "StreamingFIFO":
+            clock_intf_name = "s_axis_aclk"
+            reset_intf_name = "s_axis_aresetn"
+        else:
+            clock_intf_name = node_inst.get_verilog_top_module_intf_names()["clk"][0]
+            reset_intf_name = node_inst.get_verilog_top_module_intf_names()["rst"][0]
         # make clock and reset external, if they aren't already
         if not self.clock_reset_are_external:
             self.connect_cmds.append(
@@ -198,8 +202,30 @@ class CreateStitchedIP(Transformation):
             ip_dirs += [ip_dir_value]
             vlnv = node_inst.get_nodeattr("ip_vlnv")
             inst_name = node.name
-            create_cmd = "create_bd_cell -type ip -vlnv %s %s" % (vlnv, inst_name)
-            self.create_cmds += [create_cmd]
+            if node.op_type == "StreamingFIFO":
+                vlnv = "xilinx.com:ip:axis_data_fifo:2.0"
+                create_cmd = "create_bd_cell -type ip -vlnv %s %s" % (vlnv, inst_name)
+                self.create_cmds += [create_cmd]
+                fifo_depth = node_inst.get_nodeattr("depth")
+                create_cmd = (
+                    "set_property -dict [list CONFIG.FIFO_DEPTH {%d}] "
+                    "[get_bd_cells %s]" % (fifo_depth, inst_name)
+                )
+                self.create_cmds += [create_cmd]
+
+                # TODO: StreamingFIFO attr to get this? decide if we keep this approach
+                # inserting fifo ip
+                fifo_mem = "auto"
+                # fifo_mem = "block"
+                # fifo_mem = "ultra"
+                create_cmd = (
+                    "set_property -dict [list CONFIG.FIFO_MEMORY_TYPE {%s}] "
+                    "[get_bd_cells %s]" % (fifo_mem, inst_name)
+                )
+                self.create_cmds += [create_cmd]
+            else:
+                create_cmd = "create_bd_cell -type ip -vlnv %s %s" % (vlnv, inst_name)
+                self.create_cmds += [create_cmd]
             my_producer = model.find_producer(node.input[0])
             self.connect_clk_rst(node)
             self.connect_axi(node)
@@ -226,13 +252,21 @@ class CreateStitchedIP(Transformation):
                     producer = model.find_producer(node.input[i])
                     if producer is None:
                         continue
-                    j = list(producer.output).index(node.input[i])
-                    src_intf_name = getCustomOp(
-                        producer
-                    ).get_verilog_top_module_intf_names()["m_axis"][j]
-                    dst_intf_name = node_inst.get_verilog_top_module_intf_names()[
-                        "s_axis"
-                    ][i]
+                    if producer.op_type == "StreamingFIFO":
+                        src_intf_name = "M_AXIS"
+                    else:
+                        j = list(producer.output).index(node.input[i])
+                        src_intf_name = getCustomOp(
+                            producer
+                        ).get_verilog_top_module_intf_names()["m_axis"][j]
+
+                    if node.op_type == "StreamingFIFO":
+                        dst_intf_name = "S_AXIS"
+                    else:
+                        dst_intf_name = node_inst.get_verilog_top_module_intf_names()[
+                            "s_axis"
+                        ][i]
+
                     self.connect_cmds.append(
                         "connect_bd_intf_net [get_bd_intf_pins %s/%s] "
                         "[get_bd_intf_pins %s/%s]"
