@@ -155,10 +155,11 @@ class VitisLink(Transformation):
     ModelProto's metadata_props field with the XCLBIN full path as value.
     """
 
-    def __init__(self, platform, f_mhz=200):
+    def __init__(self, platform, f_mhz=200, link_options=""):
         super().__init__()
         self.platform = platform
         self.f_mhz = f_mhz
+        self.link_options = link_options
 
     def apply(self, model):
 
@@ -205,6 +206,9 @@ class VitisLink(Transformation):
                 config.append(
                     "sp=%s.m_axi_gmem0:DDR[%d]" % (instance_names[node.name], 0)
                 )
+
+                # TODO add support for HBM
+
             # connect streams
             if producer is not None:
                 for i in range(len(node.input)):
@@ -237,8 +241,10 @@ class VitisLink(Transformation):
             f.write("cd {}\n".format(link_dir))
             f.write(
                 "v++ -t hw --platform %s --link %s"
-                " --kernel_frequency %d --config config.txt\n"
+                " --kernel_frequency %d --config config.txt"
                 % (self.platform, " ".join(object_files), self.f_mhz)
+                + self.link_options
+                + "\n"
             )
             f.write("cd {}\n".format(working_dir))
         bash_command = ["bash", script]
@@ -280,11 +286,12 @@ class ExposeExternalParams(Transformation):
 class VitisBuild(Transformation):
     """Best-effort attempt at building the accelerator with Vitis."""
 
-    def __init__(self, fpga_part, period_ns, platform):
+    def __init__(self, fpga_part, period_ns, platform, link_options=""):
         super().__init__()
         self.fpga_part = fpga_part
         self.period_ns = period_ns
         self.platform = platform
+        self.link_options = link_options
 
     def apply(self, model):
         # first infer layouts
@@ -337,6 +344,8 @@ class VitisBuild(Transformation):
             )
             kernel_model.save(dataflow_model_filename)
         # Assemble design from kernels
-        model = model.transform(VitisLink(self.platform, round(1000 / self.period_ns)))
+        model = model.transform(
+            VitisLink(self.platform, round(1000 / self.period_ns), self.link_options)
+        )
 
         return (model, False)
