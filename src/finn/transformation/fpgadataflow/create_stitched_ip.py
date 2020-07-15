@@ -35,7 +35,8 @@ from finn.transformation import Transformation
 from finn.util.basic import get_by_name, make_build_dir
 from finn.custom_op.registry import getCustomOp
 from finn.util.basic import get_num_default_workers
-import multiprocessing as mp
+
+# import multiprocessing as mp
 
 
 class CreateStitchedIP(Transformation):
@@ -343,8 +344,9 @@ class CreateStitchedIP(Transformation):
             )
             num_workers = get_num_default_workers()
             assert num_workers >= 0, "Number of workers must be nonnegative."
-            if num_workers == 0:
-                num_workers = mp.cpu_count()
+            if num_workers == 0 or num_workers > 16:
+                num_workers = 16
+
             tcl.append("launch_runs synth_1 -jobs %s" % str(num_workers))
             tcl.append("wait_on_run [get_runs synth_1]")
             tcl.append("open_run synth_1 -name synth_1")
