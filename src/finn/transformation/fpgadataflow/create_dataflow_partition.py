@@ -32,6 +32,7 @@ from onnx import helper
 
 from finn.transformation import Transformation
 from finn.util.basic import get_by_name, make_build_dir
+from finn.custom_op.registry import getCustomOp
 
 
 class CreateDataflowPartition(Transformation):
@@ -116,8 +117,20 @@ class CreateDataflowPartition(Transformation):
                 # remove all dataflow nodes from the non-dataflow model
                 # keep track of where the dataflow part starts
                 df_start_ind = all_nodes.index(df_nodes[0])
+
+                # get floorplan
+                inst = getCustomOp(df_nodes[0])
+                slr = inst.get_nodeattr("slr")
+                for node in df_nodes[1:]:
+                    inst = getCustomOp(node)
+                    assert slr == inst.get_nodeattr(
+                        "slr"
+                    ), """all nodes with
+                same partition_id must have the same slr id"""
+
                 for node_to_remove in df_nodes:
                     non_df_model.graph.node.remove(node_to_remove)
+
                 # create StreamingDataflow node with df_in/df_out io
                 df_node = helper.make_node(
                     "StreamingDataflowPartition",
@@ -125,6 +138,8 @@ class CreateDataflowPartition(Transformation):
                     [df_out],
                     # use the model attribute to mark the df model
                     model=df_model_filename,
+                    partition_id=target_partition_id,
+                    slr=slr,
                 )
                 non_df_model.graph.node.insert(df_start_ind, df_node)
                 model = non_df_model
