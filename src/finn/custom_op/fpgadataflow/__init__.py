@@ -90,6 +90,7 @@ class HLSCustomOp(CustomOp):
             "rtlsim_so": ("s", False, ""),
             # partitioning info
             "partition_id": ("i", False, 0),
+            "slr": ("i", False, -1),
             # input and output FIFO depths
             "inFIFODepth": ("i", False, 2),
             "outFIFODepth": ("i", False, 2),
