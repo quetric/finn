@@ -170,7 +170,7 @@ class InsertFIFO(Transformation):
             # insert FIFO as last node, except when last node is DMA
             if (
                 graph.node[-1].op_type != "StreamingFIFO"
-                and graph.node[0].op_type != "IODMA"
+                and graph.node[-1].op_type != "IODMA"
             ):
                 n = graph.node[-1]
                 assert (
@@ -191,7 +191,7 @@ class InsertFIFO(Transformation):
                     n0.get_normal_output_shape(),
                 )
                 graph.value_info.append(fifo_input_tensor)
-                model.set_tensor_datatype(fifo_output_tensor.name, dtype)
+                model.set_tensor_datatype(fifo_input_tensor.name, dtype)
 
                 fifo_node = oh.make_node(
                     "StreamingFIFO",
