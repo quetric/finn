@@ -220,8 +220,12 @@ class CreateStitchedIP(Transformation):
                 # TODO: StreamingFIFO attr to get this? decide if we keep this approach
                 # inserting fifo ip
                 fifo_mem = "auto"
+                if fifo_depth <= 64:
+                    fifo_mem = "distributed"
+                elif fifo_depth > 512:
+                    fifo_mem = "ultra"
                 # fifo_mem = "block"
-                # fifo_mem = "ultra"
+
                 create_cmd = (
                     "set_property -dict [list CONFIG.FIFO_MEMORY_TYPE {%s}] "
                     "[get_bd_cells %s]" % (fifo_mem, inst_name)
