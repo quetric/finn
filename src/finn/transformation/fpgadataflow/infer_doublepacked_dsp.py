@@ -33,6 +33,7 @@ from finn.transformation import Transformation
 from finn.transformation.infer_shapes import InferShapes
 from finn.util.basic import get_by_name
 from finn.core.datatype import DataType
+from finn.custom_op.registry import getCustomOp
 import numpy as np
 
 
@@ -120,9 +121,9 @@ class InferDoublePackedConv(Transformation):
                 idtypes = [idt, wdt]
                 has_signed_inp = len(list(filter(lambda x: x.signed(), idtypes))) != 0
                 if has_signed_inp:
-                    conv_odt = DataType.INT32
+                    acc_out = DataType.INT32
                 else:
-                    conv_odt = DataType.UINT32
+                    acc_out = DataType.UINT32
 
                 # create new intermediate values
                 inp_trans_out = helper.make_tensor_value_info(
@@ -134,32 +135,55 @@ class InferDoublePackedConv(Transformation):
                 inp_trans_out = inp_trans_out.name
                 model.set_tensor_datatype(inp_trans_out, idt)
 
-                matmul_out = helper.make_tensor_value_info(
-                    model.make_new_valueinfo_name(),
-                    TensorProto.FLOAT,
-                    (1, ofm_dim, ofm_dim, ofm_ch),
-                )
-                graph.value_info.append(matmul_out)
-                matmul_out = matmul_out.name
-                model.set_tensor_datatype(matmul_out, conv_odt)
-
-                # TODO:absorb the transpose
-                has_activation = False
-
-                # consumer = model.find_consumer(mm_output)
-                # if consumer is not None and consumer.op_type == "MultiThreshold":
-                if has_activation:
-                    pass
-                    # odt = thres odt
-                    # get thres_params
-                else:
-                    odt = conv_odt
-
                 # create new nodes
                 # NCHW -> NHWC
                 inp_trans_node = helper.make_node(
                     "Transpose", [cnv_input], [inp_trans_out], perm=[0, 2, 3, 1]
                 )
+
+                conv_node_inputs = [inp_trans_out, weight_name]
+
+                dp_node_out = helper.make_tensor_value_info(
+                    model.make_new_valueinfo_name(),
+                    TensorProto.FLOAT,
+                    (1, ofm_dim, ofm_dim, ofm_ch),
+                )
+                graph.value_info.append(dp_node_out)
+                dp_node_out = dp_node_out.name
+
+                has_activation = False
+                consumer = model.find_consumer(cnv_output)
+                if consumer is not None and consumer.op_type == "MultiThreshold":
+                    has_activation = True
+                    # TODO ensure integer thresholds?
+                    # create MVTU (i.e. including activation)
+                    mt_output = consumer.output[0]
+                    mt_thres = consumer.input[1]
+                    T = model.get_initializer(mt_thres)
+                    assert (
+                        T.shape[0] == 1 or T.shape[0] == mh
+                    ), """First dimension of
+                    thresholds neither 1 nor MH."""
+                    scale = getCustomOp(consumer).get_nodeattr("out_scale")
+                    assert (
+                        scale == 1.0
+                    ), "out_scale must be equal to 1.0 for HLS conversion."
+                    actval = getCustomOp(consumer).get_nodeattr("out_bias")
+                    assert (
+                        0 == actval
+                    ), "out_bias must be 0 for HLS conversion of Dpacked conv."
+
+                    # model.set_tensor_shape(mm_input, mm_in_shape)
+                    # model.set_tensor_shape(mt_output, mt_out_shape)
+
+                    out_transp_out = mt_output
+                    conv_node_inputs += [mt_thres]
+                    odt = model.get_tensor_datatype(mt_output)
+                else:
+                    out_transp_out = cnv_output
+                    odt = acc_out
+
+                model.set_tensor_datatype(dp_node_out, odt)
 
                 # dp conv
                 simd = 1
@@ -171,14 +195,10 @@ class InferDoublePackedConv(Transformation):
                     mw * mh == wmem * pe * simd
                 ), "Requirement (MW * MH) divisiable by(WMEM * PE * SIMD) is violated."
 
-                conv_node_inputs = [inp_trans_out, weight_name]
-                # if has_activation:
-                #     conv_node_inputs += [thres_params]
-
                 dp_conv_node = helper.make_node(
                     "ConvDoublePacked_Batch",
                     conv_node_inputs,
-                    [matmul_out],
+                    [dp_node_out],
                     domain="finn",
                     backend="fpgadataflow",
                     ConvKernelDim=k,  # ("i",True,0),
@@ -204,7 +224,7 @@ class InferDoublePackedConv(Transformation):
 
                 # NHWC -> NCHW
                 out_trans_node = helper.make_node(
-                    "Transpose", [matmul_out], [cnv_output], perm=[0, 3, 1, 2]
+                    "Transpose", [dp_node_out], [out_transp_out], perm=[0, 3, 1, 2]
                 )
                 # insert nodes where the conv is to preserve topological ordering
                 graph.node.insert(node_ind, inp_trans_node)
@@ -213,6 +233,9 @@ class InferDoublePackedConv(Transformation):
                 node_ind += 2
                 # remove old nodes
                 graph.node.remove(n)
+                if has_activation:
+                    graph.node.remove(consumer)
+
                 graph_modified = True
 
         if graph_modified:

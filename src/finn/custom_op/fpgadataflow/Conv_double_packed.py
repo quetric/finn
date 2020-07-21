@@ -319,7 +319,7 @@ class ConvDoublePacked_Batch(HLSCustomOp):
 
         has_thres = self.get_nodeattr("noActivation") == 0
         if has_thres:
-            self.code_gen_dict["$GLOBALS$"] += ['#include "thresh.hpp"']
+            self.code_gen_dict["$GLOBALS$"] += ['#include "thresh.h"']
 
     def defines(self, var):
         self.code_gen_dict["$DEFINES$"] = []
@@ -385,7 +385,7 @@ class ConvDoublePacked_Batch(HLSCustomOp):
         self.code_gen_dict["$DEFINES$"] += ["#define L0_INBITS {}".format(ibits)]
 
         # define L0_MACBITS 24
-        macbits = obits
+        macbits = 32
         # macbits = 24
         self.code_gen_dict["$DEFINES$"] += ["#define L0_MACBITS {}".format(macbits)]
 
@@ -394,7 +394,7 @@ class ConvDoublePacked_Batch(HLSCustomOp):
 
         has_thres = self.get_nodeattr("noActivation") == 0
         if has_thres:
-            num_of_thres = 2 ** self.get_output_datatype().bitwidth()
+            num_of_thres = 2 ** self.get_output_datatype().bitwidth() - 1
             self.code_gen_dict["$DEFINES$"] += [
                 "#define L0_THBITS {}".format(num_of_thres * tbits)
             ]
@@ -522,19 +522,19 @@ class ConvDoublePacked_Batch(HLSCustomOp):
         ), """Threshold matrix dimension is
         not as expected (2)."""
         n_thres_steps = orig_thres_matrix.shape[1]
-        inp_is_bipolar = self.get_input_datatype() == DataType.BIPOLAR
-        wt_is_bipolar = self.get_weight_datatype() == DataType.BIPOLAR
-        # reinterpret inp/wt as bipolar if bin_xnor_mode is iset
-        inp_is_binary = self.get_input_datatype() == DataType.BINARY
-        wt_is_binary = self.get_weight_datatype() == DataType.BINARY
-        bin_xnor_mode = self.get_nodeattr("binaryXnorMode") == 1
-        inp_is_bipolar = inp_is_bipolar or (inp_is_binary and bin_xnor_mode)
-        wt_is_bipolar = wt_is_bipolar or (wt_is_binary and bin_xnor_mode)
-        if inp_is_bipolar and wt_is_bipolar:
-            # ensure all thresholds are nonnegative
-            assert (orig_thres_matrix >= 0).all()
-            # ensure all thresholds are integer
-            assert (orig_thres_matrix.astype(np.int32) == orig_thres_matrix).all()
+        # inp_is_bipolar = self.get_input_datatype() == DataType.BIPOLAR
+        # wt_is_bipolar = self.get_weight_datatype() == DataType.BIPOLAR
+        # # reinterpret inp/wt as bipolar if bin_xnor_mode is iset
+        # inp_is_binary = self.get_input_datatype() == DataType.BINARY
+        # wt_is_binary = self.get_weight_datatype() == DataType.BINARY
+        # bin_xnor_mode = self.get_nodeattr("binaryXnorMode") == 1
+        # inp_is_bipolar = inp_is_bipolar or (inp_is_binary and bin_xnor_mode)
+        # wt_is_bipolar = wt_is_bipolar or (wt_is_binary and bin_xnor_mode)
+        # if inp_is_bipolar and wt_is_bipolar:
+        #     # ensure all thresholds are nonnegative
+        #     assert (orig_thres_matrix >= 0).all()
+        #     # ensure all thresholds are integer
+        #     assert (orig_thres_matrix.astype(np.int32) == orig_thres_matrix).all()
         ret = orig_thres_matrix
         # ensure channels = mh , duplicating if necessary
         if ret.shape[0] == 1:
@@ -610,26 +610,19 @@ class ConvDoublePacked_Batch(HLSCustomOp):
         # save thresholds in thresh.h
         has_thres = self.get_nodeattr("noActivation") == 0
         if has_thres:
-            # if len(self.onnx_node.input) > 2:
+            assert len(self.onnx_node.input) > 2, "need at least 3 inputs"
             thresholds = model.get_initializer(self.onnx_node.input[2])
             if thresholds is not None:
                 threshold_tensor = self.get_hls_compatible_threshold_tensor(thresholds)
                 tdt = DataType.INT32
-                # use UINT32 threshold export for bipolar times bipolar
-                inp_is_bipolar = self.get_input_datatype() == DataType.BIPOLAR
-                wt_is_bipolar = self.get_weight_datatype() == DataType.BIPOLAR
-                # reinterpret inp/wt as bipolar if bin_xnor_mode is iset
-                inp_is_binary = self.get_input_datatype() == DataType.BINARY
-                wt_is_binary = self.get_weight_datatype() == DataType.BINARY
-                bin_xnor_mode = self.get_nodeattr("binaryXnorMode") == 1
-                inp_is_bipolar = inp_is_bipolar or (inp_is_binary and bin_xnor_mode)
-                wt_is_bipolar = wt_is_bipolar or (wt_is_binary and bin_xnor_mode)
 
-                if inp_is_bipolar and wt_is_bipolar:
-                    tdt = DataType.UINT32
                 thresholds_hls_code = numpy_to_hls_code(
                     threshold_tensor, tdt, "thresholds", True, True
                 )
+                thresholds_hls_code = (
+                    thresholds_hls_code[1:-2] + thresholds_hls_code[-1:]
+                )
+                # thresholds_hls_code.replace("{{{", "{{").replace("}}}", "}}")
                 # write thresholds into thresh.h
                 f_thresh = open("{}/thresh.h".format(code_gen_dir), "w")
                 # tdt_hls = tdt.get_hls_datatype_str()
