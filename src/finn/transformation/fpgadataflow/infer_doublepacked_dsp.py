@@ -121,9 +121,9 @@ class InferDoublePackedConv(Transformation):
                 idtypes = [idt, wdt]
                 has_signed_inp = len(list(filter(lambda x: x.signed(), idtypes))) != 0
                 if has_signed_inp:
-                    acc_out = DataType.INT32
+                    acc_dt = DataType.INT32
                 else:
-                    acc_out = DataType.UINT32
+                    acc_dt = DataType.UINT32
 
                 # create new intermediate values
                 inp_trans_out = helper.make_tensor_value_info(
@@ -155,11 +155,27 @@ class InferDoublePackedConv(Transformation):
                 consumer = model.find_consumer(cnv_output)
                 if consumer is not None and consumer.op_type == "MultiThreshold":
                     has_activation = True
-                    # TODO ensure integer thresholds?
-                    # create MVTU (i.e. including activation)
+
                     mt_output = consumer.output[0]
                     mt_thres = consumer.input[1]
                     T = model.get_initializer(mt_thres)
+                    # ensure integer thresholds?
+
+                    Tnew = np.ceil(T)
+                    if acc_dt.is_integer() and (T != Tnew).any():
+                        # round up the thresholds to nearest integer
+                        model.set_initializer(mt_thres, Tnew)
+                        # use same datatype as inputs for thresholds
+                        model.set_tensor_datatype(mt_thres, acc_dt)
+                    if acc_dt.is_integer() and not acc_dt.signed() and (Tnew < 0).any():
+                        # clip any negative thresholds
+                        Tnew = np.clip(Tnew, 0, None)
+                        model.set_initializer(mt_thres, Tnew)
+                        # use same datatype as inputs for thresholds
+                        model.set_tensor_datatype(mt_thres, acc_dt)
+
+                    # create MVTU (i.e. including activation)
+
                     assert (
                         T.shape[0] == 1 or T.shape[0] == mh
                     ), """First dimension of
@@ -181,7 +197,7 @@ class InferDoublePackedConv(Transformation):
                     odt = model.get_tensor_datatype(mt_output)
                 else:
                     out_transp_out = cnv_output
-                    odt = acc_out
+                    odt = acc_dt
 
                 model.set_tensor_datatype(dp_node_out, odt)
 
