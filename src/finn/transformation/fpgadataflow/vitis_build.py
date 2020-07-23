@@ -48,9 +48,14 @@ from finn.transformation.fpgadataflow.replace_verilog_relpaths import (
 from finn.transformation.fpgadataflow.create_stitched_ip import CreateStitchedIP
 from finn.transformation.fpgadataflow.floorplan import Floorplan
 from finn.transformation.fpgadataflow.make_pynq_driver import MakePYNQDriver
-from finn.transformation.general import GiveReadableTensorNames, GiveUniqueNodeNames
 from finn.util.basic import make_build_dir
 from finn.transformation.infer_data_layouts import InferDataLayouts
+
+from finn.transformation.general import (
+    GiveReadableTensorNames,
+    GiveUniqueNodeNames,
+    RemoveUnusedTensors,
+)
 
 
 class CreateVitisXO(Transformation):
@@ -150,10 +155,11 @@ class VitisLink(Transformation):
     ModelProto's metadata_props field with the XCLBIN full path as value.
     """
 
-    def __init__(self, platform, f_mhz=200):
+    def __init__(self, platform, f_mhz=200, link_options=""):
         super().__init__()
         self.platform = platform
         self.f_mhz = f_mhz
+        self.link_options = link_options
 
     def apply(self, model):
 
@@ -194,12 +200,31 @@ class VitisLink(Transformation):
                 instance_names[node.name] = node.name
                 config.append("nk=%s:1:%s" % (node.name, instance_names[node.name]))
             # assign SLRs
-            config.append("slr=%s:SLR0" % instance_names[node.name])
+
+            slr = sdp_node.get_nodeattr("slr")
+            if slr >= 0:
+                config.append("slr=%s:SLR%d" % (instance_names[node.name], slr))
+
             # assign memory banks
+            # TODO test code:
+            # if producer is None or consumer is None:
+            #     mem_bank = sdp_node.get_nodeattr("mem_bank")
+            #     mem_type  = sdp_node.get_nodeattr("mem_type")
+
+            #     mem_bank = 0 if mem_bank <0 else mem_bank
+
+            #     mem_bank = "DDR" if mem_bank "" else mem_type
+            #     config.append(
+            #     "sp=%s.m_axi_gmem0:%s[%d]" % (instance_names[node.name],
+            #                                        mem_type, mem_bank)
+            #     )
+
             if producer is None or consumer is None:
                 config.append(
-                    "sp=%s.m_axi_gmem0:DDR[%d]" % (instance_names[node.name], 0)
+                    "sp=%s.m_axi_gmem0:DDR[%d]"
+                    % (instance_names[node.name], idma_idx + odma_idx - 1)
                 )
+
             # connect streams
             if producer is not None:
                 for i in range(len(node.input)):
@@ -232,8 +257,10 @@ class VitisLink(Transformation):
             f.write("cd {}\n".format(link_dir))
             f.write(
                 "v++ -t hw --platform %s --link %s"
-                " --kernel_frequency %d --config config.txt\n"
+                " --kernel_frequency %d --config config.txt"
                 % (self.platform, " ".join(object_files), self.f_mhz)
+                + self.link_options
+                + "\n"
             )
             f.write("cd {}\n".format(working_dir))
         bash_command = ["bash", script]
@@ -242,24 +269,59 @@ class VitisLink(Transformation):
         return (model, False)
 
 
+class ExposeExternalParams(Transformation):
+    """
+    Removes inputs externally supplied from graph.value_info and
+    inserts it in graph.input as required to properly transform the model
+    from Vitis build
+    """
+
+    def apply(self, model):
+        supported_op_types = ["StreamingFCLayer_Batch"]
+        for vi in model.graph.value_info:
+            consumers = model.find_consumers(vi.name)
+
+            if (
+                consumers is not None
+                and len(consumers) == 1
+                and consumers[0].op_type in supported_op_types
+            ):
+                node = consumers[0]
+                custom_op = getCustomOp(node)
+                inp_idx = list(node.input).index(vi.name)
+                if inp_idx != 1:
+                    continue
+                if custom_op.get_nodeattr("mem_mode") == "external":
+                    model.graph.input.append(vi)
+                    model.graph.value_info.remove(vi)
+
+        # one iteration is enough
+        return model, False
+
+
 class VitisBuild(Transformation):
     """Best-effort attempt at building the accelerator with Vitis."""
 
-    def __init__(self, fpga_part, period_ns, platform):
+    def __init__(
+        self, fpga_part, period_ns, platform, link_options="", floorplan_file=None
+    ):
         super().__init__()
         self.fpga_part = fpga_part
         self.period_ns = period_ns
         self.platform = platform
+        self.link_options = link_options
+        self.user_floorplan_file = floorplan_file
 
     def apply(self, model):
         # first infer layouts
         model = model.transform(InferDataLayouts())
         # prepare at global level, then break up into kernels
+        model.set_metadata_prop("clk_ns", str(self.period_ns))
         prep_transforms = [
             MakePYNQDriver(),
             InsertIODMA(512),
             InsertDWC(),
-            Floorplan(),
+            Floorplan(floorplan_file=self.user_floorplan_file),
             CreateDataflowPartition(),
         ]
         for trn in prep_transforms:
@@ -273,6 +335,11 @@ class VitisBuild(Transformation):
             dataflow_model_filename = sdp_node.get_nodeattr("model")
             kernel_model = ModelWrapper(dataflow_model_filename)
             kernel_model = kernel_model.transform(InsertFIFO())
+            kernel_model = kernel_model.transform(GiveUniqueNodeNames())
+            kernel_model = kernel_model.transform(GiveReadableTensorNames())
+            kernel_model = kernel_model.transform(RemoveUnusedTensors())
+            kernel_model = kernel_model.transform(ExposeExternalParams())
+
             kernel_model = kernel_model.transform(
                 InsertTLastMarker(both=True, external=False, dynamic=False)
             )
@@ -281,18 +348,23 @@ class VitisBuild(Transformation):
             kernel_model = kernel_model.transform(
                 PrepareIP(self.fpga_part, self.period_ns)
             )
+            kernel_model.save(dataflow_model_filename)
             kernel_model = kernel_model.transform(HLSSynthIP())
             kernel_model = kernel_model.transform(ReplaceVerilogRelPaths())
+            kernel_model.save(dataflow_model_filename)
             kernel_model = kernel_model.transform(
                 CreateStitchedIP(
                     self.fpga_part, self.period_ns, sdp_node.onnx_node.name, True
                 )
             )
+            kernel_model.save(dataflow_model_filename)
             kernel_model = kernel_model.transform(
                 CreateVitisXO(sdp_node.onnx_node.name)
             )
             kernel_model.save(dataflow_model_filename)
         # Assemble design from kernels
-        model = model.transform(VitisLink(self.platform, round(1000 / self.period_ns)))
+        model = model.transform(
+            VitisLink(self.platform, round(1000 / self.period_ns), self.link_options)
+        )
 
         return (model, False)

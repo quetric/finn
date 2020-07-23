@@ -55,6 +55,9 @@ from finn.custom_op.fpgadataflow.duplicatestreams_batch import DuplicateStreams_
 from finn.custom_op.fpgadataflow.channelwise_op_batch import ChannelwiseOp_Batch
 from finn.custom_op.fpgadataflow.iodma import IODMA
 
+from finn.custom_op.fpgadataflow.Conv_double_packed import ConvDoublePacked_Batch
+
+
 # create a mapping of all known CustomOp names and classes
 custom_op = {}
 
@@ -80,6 +83,8 @@ custom_op["QuantAvgPool2d"] = QuantAvgPool2d
 custom_op["DuplicateStreams_Batch"] = DuplicateStreams_Batch
 custom_op["ChannelwiseOp_Batch"] = ChannelwiseOp_Batch
 custom_op["IODMA"] = IODMA
+
+custom_op["ConvDoublePacked_Batch"] = ConvDoublePacked_Batch
 
 
 def getCustomOp(node):
