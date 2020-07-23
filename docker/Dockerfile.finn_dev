@@ -57,6 +57,7 @@ RUN pip install sphinx
 RUN pip install sphinx_rtd_theme
 RUN pip install pytest-xdist
 RUN pip install pytest-parallel
+RUN pip install deap
 
 # switch user
 RUN groupadd -g $GID $GNAME
