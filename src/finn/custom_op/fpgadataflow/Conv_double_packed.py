@@ -385,12 +385,12 @@ class ConvDoublePacked_Batch(HLSCustomOp):
         self.code_gen_dict["$DEFINES$"] += ["#define L0_INBITS {}".format(ibits)]
 
         # define L0_MACBITS 24
-        macbits = 32
-        # macbits = 24
+        # macbits = 32
+        macbits = 24
         self.code_gen_dict["$DEFINES$"] += ["#define L0_MACBITS {}".format(macbits)]
 
         # define L0_THBITS 96
-        tbits = macbits
+        tbits = 32
 
         has_thres = self.get_nodeattr("noActivation") == 0
         if has_thres:
