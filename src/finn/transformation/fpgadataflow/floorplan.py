@@ -63,6 +63,26 @@ class Floorplan(Transformation):
                 node_inst = getCustomOp(node)
                 if node.name in self.user_floorplan:
                     node_slr = self.user_floorplan[node.name]["slr"]
+                elif node.op_type == "StreamingDataWidthConverter_Batch":
+                    # optimize for possible SLR crossing
+                    in_width = node_inst.get_nodeattr("inWidth")
+                    out_width = node_inst.get_nodeattr("outWidth")
+                    if in_width > out_width:
+                        # use consumer config (node not yet configured)
+                        consumer = model.find_consumer(node.output[0])
+                        if consumer.name in self.user_floorplan:
+                            node_slr = self.user_floorplan[consumer.name]["slr"]
+                        elif "default" in self.user_floorplan:
+                            node_slr = self.user_floorplan["default"]["slr"]
+                        else:
+                            no_config += 1
+                            node_slr = -1  # no pblock assignment in linking
+                    else:
+                        # use producer config (node already configured)
+                        producer = model.find_producer(node.input[0])
+                        prod_inst = getCustomOp(producer)
+                        node_slr = prod_inst.get_nodeattr("slr")
+
                 elif "default" in self.user_floorplan:
                     node_slr = self.user_floorplan["default"]["slr"]
                 else:
