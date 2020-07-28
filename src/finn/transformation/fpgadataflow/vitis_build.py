@@ -221,9 +221,13 @@ class VitisLink(Transformation):
 
             if producer is None or consumer is None:
                 config.append(
-                    "sp=%s.m_axi_gmem0:DDR[%d]"
-                    % (instance_names[node.name], idma_idx + odma_idx - 1)
+                    "sp=%s.m_axi_gmem0:DDR[%d]" % (instance_names[node.name], 0)
                 )
+
+                # config.append(
+                #     "sp=%s.m_axi_gmem0:HBM[0:31]"
+                #     % (instance_names[node.name])
+                # )
 
             # connect streams
             if producer is not None:
