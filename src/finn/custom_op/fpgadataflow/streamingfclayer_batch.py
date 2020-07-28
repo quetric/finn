@@ -565,14 +565,14 @@ class StreamingFCLayer_Batch(HLSCustomOp):
                 weight_tensor_pe_flipped = pack_innermost_dim_as_hex_string(
                     weight_tensor_pe_flipped, export_wdt, weight_width_padded, prefix=""
                 )
-                weight_stream_len = np.prod(weight_tensor_pe_flipped.shape)
-                factor = math.ceil(weight_stream_len / 1024)
+                # weight_stream_len = np.prod(weight_tensor_pe_flipped.shape)
+                # factor = math.ceil(weight_stream_len / 1024)
                 # add zeroes to pad out file to 1024 entries
                 weight_stream = weight_tensor_pe_flipped.flatten()
-                pad_amt = (factor * 1024) - weight_stream_len
-                weight_stream = np.pad(
-                    weight_stream, (0, pad_amt), mode="constant", constant_values="0"
-                )
+                # pad_amt = (factor * 1024) - weight_stream_len
+                # weight_stream = np.pad(
+                #     weight_stream, (0, pad_amt), mode="constant", constant_values="0"
+                # )
                 weight_stream = weight_stream.copy()
                 i = 0
                 j = 0
@@ -611,19 +611,29 @@ class StreamingFCLayer_Batch(HLSCustomOp):
                 perceptive_field_elems = self.get_nodeattr("MW")
                 min_input = self.get_input_datatype().min()
                 max_input = self.get_input_datatype().max()
-                #calculate minimum and maximum values of accumulator
-                #assume inputs span the whole range of the input datatype
-                acc_min = perceptive_field_elems * min(min_weight*max_input, min_weight*min_input, max_weight*max_input, max_weight*min_input)
-                acc_max = perceptive_field_elems * max(min_weight*max_input, min_weight*min_input, max_weight*max_input, max_weight*min_input)
+                # calculate minimum and maximum values of accumulator
+                # assume inputs span the whole range of the input datatype
+                acc_min = perceptive_field_elems * min(
+                    min_weight * max_input,
+                    min_weight * min_input,
+                    max_weight * max_input,
+                    max_weight * min_input,
+                )
+                acc_max = perceptive_field_elems * max(
+                    min_weight * max_input,
+                    min_weight * min_input,
+                    max_weight * max_input,
+                    max_weight * min_input,
+                )
 
-                #get range required by threshold values
+                # get range required by threshold values
                 tdt_min = min(acc_min, min_threshold)
                 tdt_max = max(acc_max, max_threshold)
                 if tdt_min < 0:
                     if abs(tdt_min) > tdt_max:
                         tdt = DataType.get_smallest_possible(tdt_min)
                     else:
-                        tdt = DataType.get_smallest_possible(0-tdt_max)
+                        tdt = DataType.get_smallest_possible(0 - tdt_max)
                 else:
                     tdt = DataType.get_smallest_possible(tdt_max)
 
@@ -1061,9 +1071,9 @@ class StreamingFCLayer_Batch(HLSCustomOp):
             self.code_gen_dict["$WEIGHT_RANGE$"] = ["[{}:0]".format(weight_width - 1)]
             self.code_gen_dict["$WEIGHT_WIDTH$"] = [str(weight_width)]
             self.code_gen_dict["$WSTREAM_DEPTH$"] = [str(self.calc_wmem())]
-            self.code_gen_dict["$MEM_DEPTH$"] = [
-                str(roundup_to_integer_multiple(self.calc_wmem(), 1024))
-            ]
+            self.code_gen_dict["$MEM_DEPTH$"] = [str(self.calc_wmem())]
+            #     str(roundup_to_integer_multiple(self.calc_wmem(), 1024))
+            # ]
             self.code_gen_dict["$RAM_STYLE$"] = [self.get_nodeattr("ram_style")]
 
             template = self.decoupled_wrapper
