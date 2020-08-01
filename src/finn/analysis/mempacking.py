@@ -28,7 +28,6 @@
 
 import random
 import math
-import sys
 
 from operator import itemgetter
 
@@ -380,10 +379,13 @@ class packDefaultConfig:
 
 
 def pack_memory(model, args=packDefaultConfig()):
-
     # scrape weight shapes from model
-    network_spec = weight_shapes(model)
+    shapes = weight_shapes(model)
+    # do packing
+    return pack_memory_shapes(shapes, args)
 
+
+def pack_memory_shapes(shapes, args=packDefaultConfig()):
     opt = (-1.0, -1.0, -1.0)  # optimization weights
     args.start_id = 0
     line_count = 0
@@ -393,12 +395,12 @@ def pack_memory(model, args=packDefaultConfig()):
     mapped_layers = []
 
     # network parser
-    for layer in network_spec:
+    for layer in shapes:
         label = layer
-        simd = network_spec[layer]["SIMD"]
-        pe = network_spec[layer]["PE"]
-        wmem = network_spec[layer]["WMEM"]
-        wprec = network_spec[layer]["DataType"].bitwidth()
+        simd = shapes[layer]["SIMD"]
+        pe = shapes[layer]["PE"]
+        wmem = shapes[layer]["WMEM"]
+        wprec = shapes[layer]["DataType"].bitwidth()
         # Only record layers that map reasonably efficiently to BRAM
         if wmem >= args.thresh_min and wmem <= args.thresh_max:
             mapped_layers.append(layers)
@@ -409,9 +411,9 @@ def pack_memory(model, args=packDefaultConfig()):
         line_count += 1
         layers += 1
 
-    if len(mapped_layers) == 0:
-        print("No suitable layers to process. Try reducing your threshold")
-        sys.exit()
+    assert (
+        len(mapped_layers) != 0
+    ), "No suitable layers to process. Try reducing your threshold"
 
     args.end_id = partitions
 

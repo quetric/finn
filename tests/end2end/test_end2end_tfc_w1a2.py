@@ -186,7 +186,9 @@ def test_end2end_tfc_w1a2_vitis(board, period_ns):
         fcl_inst.set_nodeattr("outFIFODepth", ofifo)
         fcl_inst.set_nodeattr("ram_style", ramstyle)
 
-    model = model.transform(VitisBuild(fpga_part, period_ns, platform))
+    model = model.transform(
+        VitisBuild(fpga_part, period_ns, platform, pack_global=True)
+    )
     model.save(build_dir + "/end2end_tfc_w1a2_dataflow_model_vitis.onnx")
 
 

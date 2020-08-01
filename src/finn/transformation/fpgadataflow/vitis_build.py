@@ -46,6 +46,7 @@ from finn.transformation.fpgadataflow.replace_verilog_relpaths import (
     ReplaceVerilogRelPaths,
 )
 from finn.transformation.fpgadataflow.create_stitched_ip import CreateStitchedIP
+from finn.transformation.fpgadataflow.create_mem_subsystem import CreateMemSubsystem
 from finn.transformation.fpgadataflow.floorplan import Floorplan
 from finn.transformation.fpgadataflow.make_pynq_driver import MakePYNQDriver
 from finn.util.basic import make_build_dir
@@ -118,6 +119,16 @@ class CreateVitisXO(Transformation):
                     "{numReps:0:%s:s_axi_control:0x4:0x1C:uint:0}" % str(arg_id)
                 )
                 arg_id += 1
+            elif node.op_type == "MemStreamer":
+                nstreams = node_inst.get_nodeattr("nstreams")
+                stream_widths = node_inst.get_stream_widths()
+                for i in range(nstreams):
+                    args_string.append(
+                        "{out%s:4:%s:m_axis_%d:0x0:0x0:ap_uint&lt;%s>:0}"
+                        % (str(arg_id), str(arg_id), m_axis_idx, str(stream_widths[i]))
+                    )
+                    arg_id += 1
+                    m_axis_idx += 1
 
         # save kernel xml then run package_xo
         xo_name = self.ip_name + ".xo"
@@ -168,6 +179,7 @@ class VitisLink(Transformation):
         object_files = []
         idma_idx = 0
         odma_idx = 0
+        memsubsystem_idx = 0
         instance_names = {}
         for node in model.graph.node:
             assert node.op_type == "StreamingDataflowPartition", "Invalid link graph"
@@ -180,18 +192,25 @@ class VitisLink(Transformation):
             # assume each node connected to outputs/inputs is DMA:
             # has axis, aximm and axilite
             # everything else is axis-only
-            # assume only one connection from each ip to the next
+            # assume anything that has no input is a mem subsystem
             # all aximm allocated to DDR[0]
             # all kernels allocated to SLR0
-            producer = model.find_producer(node.input[0])
+            if len(node.input) > 0:
+                producer = model.find_producer(node.input[0])
+            else:
+                producer = None
             consumer = model.find_consumers(node.output[0])
             # define kernel instances
             # name kernels connected to graph inputs as idmaxx
             # name kernels connected to graph inputs as odmaxx
-            if producer is None:
+            if len(node.input) > 0 and producer is None:
                 instance_names[node.name] = "idma" + str(idma_idx)
                 config.append("nk=%s:1:%s" % (node.name, instance_names[node.name]))
                 idma_idx += 1
+            elif len(node.input) == 0:
+                instance_names[node.name] = "memsubsystem" + str(memsubsystem_idx)
+                config.append("nk=%s:1:%s" % (node.name, instance_names[node.name]))
+                memsubsystem_idx += 1
             elif consumer is None:
                 instance_names[node.name] = "odma" + str(odma_idx)
                 config.append("nk=%s:1:%s" % (node.name, instance_names[node.name]))
@@ -219,7 +238,7 @@ class VitisLink(Transformation):
             #                                        mem_type, mem_bank)
             #     )
 
-            if producer is None or consumer is None:
+            if (len(node.input) > 0 and producer is None) or consumer is None:
                 config.append(
                     "sp=%s.m_axi_gmem0:DDR[%d]"
                     % (instance_names[node.name], idma_idx + odma_idx - 1)
@@ -303,7 +322,14 @@ class VitisBuild(Transformation):
     """Best-effort attempt at building the accelerator with Vitis."""
 
     def __init__(
-        self, fpga_part, period_ns, platform, link_options="", floorplan_file=None
+        self,
+        fpga_part,
+        period_ns,
+        platform,
+        link_options="",
+        floorplan_file=None,
+        pack_strategy="inter",
+        pack_global=False,
     ):
         super().__init__()
         self.fpga_part = fpga_part
@@ -311,6 +337,8 @@ class VitisBuild(Transformation):
         self.platform = platform
         self.link_options = link_options
         self.user_floorplan_file = floorplan_file
+        self.pack_strategy = pack_strategy
+        self.pack_global = pack_global
 
     def apply(self, model):
         # first infer layouts
@@ -322,6 +350,9 @@ class VitisBuild(Transformation):
             InsertIODMA(512),
             InsertDWC(),
             Floorplan(floorplan_file=self.user_floorplan_file),
+            CreateMemSubsystem(
+                strategy=self.pack_strategy, ignore_slr=self.pack_global
+            ),
             CreateDataflowPartition(),
         ]
         for trn in prep_transforms:

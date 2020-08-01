@@ -125,7 +125,8 @@ class GiveReadableTensorNames(Transformation):
                     model.rename_tensor(i, "%s_param%d" % (n.name, init_in_num))
                     init_in_num += 1
         # give special names to the main model input and output
-        model.rename_tensor(model.graph.input[0].name, "global_in")
+        if len(model.graph.input) > 0:
+            model.rename_tensor(model.graph.input[0].name, "global_in")
         model.rename_tensor(model.graph.output[0].name, "global_out")
         # return model_was_changed = False as single iteration is always enough
         return (model, False)

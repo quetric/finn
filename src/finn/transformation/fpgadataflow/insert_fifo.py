@@ -133,6 +133,7 @@ class InsertFIFO(Transformation):
             if (
                 graph.node[0].op_type != "StreamingFIFO"
                 and graph.node[0].op_type != "IODMA"
+                and graph.node[0].op_type != "MemStreamer"
             ):
                 n = graph.node[0]
                 n_input = n.input[0]
@@ -171,6 +172,7 @@ class InsertFIFO(Transformation):
             if (
                 graph.node[-1].op_type != "StreamingFIFO"
                 and graph.node[-1].op_type != "IODMA"
+                and graph.node[-1].op_type != "MemStreamer"
             ):
                 n = graph.node[-1]
                 assert (

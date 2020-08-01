@@ -54,10 +54,14 @@ class InsertTLastMarker(Transformation):
         graph_out_name = model.graph.output[0].name
         final_node = model.find_producer(graph_out_name)
         graph_modified = False
-        if final_node.op_type != "TLastMarker" and not (
-            final_node.op_type == "IODMA"
-            and get_by_name(final_node.attribute, "direction").s.decode("UTF-8")
-            == "out"
+        if (
+            final_node.op_type != "TLastMarker"
+            and final_node.op_type != "MemStreamer"
+            and not (
+                final_node.op_type == "IODMA"
+                and get_by_name(final_node.attribute, "direction").s.decode("UTF-8")
+                == "out"
+            )
         ):
 
             custom_op = getCustomOp(final_node)
