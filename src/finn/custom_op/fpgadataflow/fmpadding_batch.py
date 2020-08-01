@@ -225,8 +225,12 @@ class FMPadding_Batch(HLSCustomOp):
         ]
 
     def pragmas(self):
-        self.code_gen_dict["$PRAGMAS$"] = ["#pragma HLS INTERFACE axis port=in0"]
-        self.code_gen_dict["$PRAGMAS$"].append("#pragma HLS INTERFACE axis port=out")
+        self.code_gen_dict["$PRAGMAS$"] = [
+            "#pragma HLS INTERFACE axis register off  port=in0"
+        ]
+        self.code_gen_dict["$PRAGMAS$"].append(
+            "#pragma HLS INTERFACE axis register off  port=out"
+        )
         self.code_gen_dict["$PRAGMAS$"].append(
             "#pragma HLS INTERFACE ap_ctrl_none port=return"
         )
