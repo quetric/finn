@@ -124,8 +124,8 @@ class InsertFIFO(Transformation):
                                 if inp == n_output:
                                     consumer.input[idx] = fifo_output_tensor.name
                             # ensure created FIFO depth is reflected on both sides
-                            n0.set_nodeattr("outFIFODepth", fifo_depth)
-                            n1.set_nodeattr("inFIFODepth", fifo_depth)
+                            # n0.set_nodeattr("outFIFODepth", fifo_depth)
+                            # n1.set_nodeattr("inFIFODepth", fifo_depth)
                             graph_modified = True
 
         if graph_modified is False:
