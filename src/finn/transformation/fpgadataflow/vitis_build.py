@@ -51,12 +51,21 @@ from finn.transformation.fpgadataflow.floorplan import Floorplan
 from finn.transformation.fpgadataflow.make_pynq_driver import MakePYNQDriver
 from finn.util.basic import make_build_dir
 from finn.transformation.infer_data_layouts import InferDataLayouts
-
 from finn.transformation.general import (
     GiveReadableTensorNames,
     GiveUniqueNodeNames,
     RemoveUnusedTensors,
 )
+
+
+def _check_vitis_envvars():
+    assert "VITIS_PATH" in os.environ, "VITIS_PATH must be set for Vitis"
+    assert (
+        "PLATFORM_REPO_PATHS" in os.environ
+    ), "PLATFORM_REPO_PATHS must be set for Vitis"
+    assert (
+        "XILINX_XRT" in os.environ
+    ), "XILINX_XRT must be set for Vitis, ensure the XRT env is sourced"
 
 
 class CreateVitisXO(Transformation):
@@ -72,6 +81,7 @@ class CreateVitisXO(Transformation):
         self.ip_name = ip_name
 
     def apply(self, model):
+        _check_vitis_envvars()
         vivado_proj_dir = model.get_metadata_prop("vivado_stitch_proj")
         stitched_ip_dir = vivado_proj_dir + "/ip"
         args_string = []
@@ -156,13 +166,16 @@ class CreateVitisXO(Transformation):
         bash_command = ["bash", package_xo_sh]
         process_compile = subprocess.Popen(bash_command, stdout=subprocess.PIPE)
         process_compile.communicate()
+        assert os.path.isfile(xo_path), (
+            "Vitis .xo file not created, check logs under %s" % vivado_proj_dir
+        )
         return (model, False)
 
 
 class VitisLink(Transformation):
     """Create an XCLBIN with Vitis.
 
-    Outcome if successful: sets the xclbin attribute in the ONNX
+    Outcome if successful: sets the vitis_xclbin attribute in the ONNX
     ModelProto's metadata_props field with the XCLBIN full path as value.
     """
 
@@ -173,7 +186,7 @@ class VitisLink(Transformation):
         self.link_options = link_options
 
     def apply(self, model):
-
+        _check_vitis_envvars()
         # create a config file and empty list of xo files
         config = ["[connectivity]"]
         object_files = []
@@ -285,6 +298,12 @@ class VitisLink(Transformation):
         bash_command = ["bash", script]
         process_compile = subprocess.Popen(bash_command, stdout=subprocess.PIPE)
         process_compile.communicate()
+        # TODO rename xclbin appropriately here?
+        xclbin = link_dir + "/a.xclbin"
+        assert os.path.isfile(xclbin), (
+            "Vitis .xclbin file not created, check logs under %s" % link_dir
+        )
+        model.set_metadata_prop("vitis_xclbin", xclbin)
         return (model, False)
 
 
@@ -341,6 +360,7 @@ class VitisBuild(Transformation):
         self.pack_global = pack_global
 
     def apply(self, model):
+        _check_vitis_envvars()
         # first infer layouts
         model = model.transform(InferDataLayouts())
         # prepare at global level, then break up into kernels
