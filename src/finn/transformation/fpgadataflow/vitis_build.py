@@ -56,6 +56,7 @@ from finn.transformation.general import (
     GiveUniqueNodeNames,
     RemoveUnusedTensors,
 )
+from finn.util.basic import alveo_default_platform
 
 
 def _check_vitis_envvars():
@@ -235,9 +236,14 @@ class VitisLink(Transformation):
             #     )
 
             if producer is None or consumer is None:
-                config.append(
-                    "sp=%s.m_axi_gmem0:DDR[%d]" % (instance_names[node.name], 0)
-                )
+                if self.platform == alveo_default_platform["U280"]:
+                    config.append(
+                        "sp=%s.m_axi_gmem0:HBM[0:31]" % (instance_names[node.name])
+                    )
+                else:
+                    config.append(
+                        "sp=%s.m_axi_gmem0:DDR[%d]" % (instance_names[node.name], 0)
+                    )
 
                 # config.append(
                 #     "sp=%s.m_axi_gmem0:HBM[0:31]"
