@@ -89,7 +89,8 @@ class CreateMemSubsystem(Transformation):
                         continue
                 if (
                     node_inst.bram_efficiency_estimation() < 0.8
-                ):  # and node_inst.calc_wmem() > 128:
+                    and node_inst.calc_wmem() > 128
+                ):
                     pe.append(node_inst.get_nodeattr("PE"))
                     simd.append(node_inst.get_nodeattr("SIMD"))
                     wmem.append(node_inst.calc_wmem())

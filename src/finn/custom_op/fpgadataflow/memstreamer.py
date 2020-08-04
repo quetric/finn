@@ -28,7 +28,7 @@
 
 import os
 import subprocess
-
+import copy
 import numpy as np
 import math
 
@@ -43,6 +43,20 @@ from finn.util.basic import roundup_to_integer_multiple
 # the point is to generate using memstreamers the IP that serves all target
 # layers with the specified packing solution
 
+memclkrst_template = """
+create_bd_cell -type ip -vlnv xilinx.com:ip:clk_wiz:6.0 memclk
+connect_bd_net [get_bd_ports ap_clk] [get_bd_pins memclk/clk_in1]
+set_property -dict [list CONFIG.PRIM_IN_FREQ.VALUE_SRC USER] [get_bd_cells memclk]
+set_property -dict [list CONFIG.PRIM_IN_FREQ $computefreqmhz] [get_bd_cells memclk]
+set_property -dict [list CONFIG.USE_LOCKED {false} CONFIG.USE_RESET {false}] [get_bd_cells memclk]
+set_property -dict [list CONFIG.OVERRIDE_MMCM {true} CONFIG.MMCM_CLKFBOUT_MULT_F {$CLKMULT$}] [get_bd_cells memclk]
+set_property -dict [list CONFIG.MMCM_CLKOUT0_DIVIDE_F {$CLKDIV$}] [get_bd_cells memclk]
+create_bd_cell -type ip -vlnv xilinx.com:ip:proc_sys_reset:5.0 psrst_memclk
+connect_bd_net [get_bd_ports ap_rst_n] [get_bd_pins psrst_memclk/ext_reset_in]
+connect_bd_net [get_bd_pins memclk/clk_out1] [get_bd_pins psrst_memclk/slowest_sync_clk]
+save_bd_design
+"""
+
 
 class MemStreamer(HLSCustomOp):
     """Class that implements a packed memory streamer. Takes
@@ -51,7 +65,7 @@ class MemStreamer(HLSCustomOp):
 
     def __init__(self, onnx_node):
         super().__init__(onnx_node)
-        self.shapes = self.get_shapes_dict()
+        self.shapes = self.merge_pe_simd(self.get_shapes_dict())
         self.outputs = {}
         for key in self.shapes.keys():
             self.outputs[key] = "out_" + key
@@ -61,6 +75,7 @@ class MemStreamer(HLSCustomOp):
             # Number of output streams
             "nstreams": ("i", True, 0),
             "strategy": ("s", False, "inter"),
+            "max_height": ("i", False, 4),
             # parallelism parameters
             "PE": ("ints", True, []),
             "SIMD": ("ints", True, []),
@@ -129,6 +144,45 @@ class MemStreamer(HLSCustomOp):
             }
         return ret
 
+    def merge_pe_simd(self, shapes):
+        """Trades off PE and SIMD dimensions to take advantage of wider memories."""
+        ret = shapes
+        for layer in shapes:
+            pe = shapes[layer]["PE"]
+            simd = shapes[layer]["SIMD"]
+            wmem = shapes[layer]["WMEM"]
+            values = shapes[layer]["Values"]
+            dataw = shapes[layer]["DataType"].bitwidth()
+            max_width = pe * simd * dataw
+            # pack narrow buffers into a single PE, for efficiency
+            # TODO: take depth into consideration
+            if max_width < 18:
+                scaled_pe = 1
+                factor = pe
+            else:
+                # find minimum value of PE where we get some
+                # benefit from using all 18 bits of a BRAM18
+                scaled_pe = 1
+                while scaled_pe < pe:
+                    if pe % scaled_pe == 0:
+                        factor = int(pe / scaled_pe)
+                        width = scaled_pe * simd * dataw
+                        if math.ceil(width / 18) < math.ceil(width / 16):
+                            break
+                    scaled_pe += 1
+            if scaled_pe < pe:
+                assert values.shape == (pe, wmem, simd), "Unexpected weight array shape"
+                # TODO check this results in correct data layout
+                values = (
+                    values.transpose(1, 0, 2)
+                    .reshape(wmem, scaled_pe, simd * factor)
+                    .transpose(1, 0, 2)
+                )
+                ret[layer]["Values"] = values
+                ret[layer]["PE"] = scaled_pe
+                ret[layer]["SIMD"] = factor * simd
+        return ret
+
     def ipgen_singlenode_code(self):
         """Builds the bash script for ip generation."""
         node = self.onnx_node
@@ -167,7 +221,10 @@ class MemStreamer(HLSCustomOp):
             config.enableInter = True
         else:
             raise Exception("Strategy parameter set incorrectly")
+        config.gold = 0
         config.thresh_min = 0
+        stack_height = self.get_nodeattr("max_height")
+        config.max_stack_height = stack_height
         self.packed_shapes = pack_memory_shapes(self.shapes, args=config)
         self.build_connectivity_spec()
         self.build_bin_spec()
@@ -176,57 +233,45 @@ class MemStreamer(HLSCustomOp):
 
     def generate_params(self, tcl_folder):
         """Generate readmemh include files for RTL streamers."""
-        # TODO: use self.connectivity to gather info about bins
-        # parse bins
-        solution = self.packed_shapes
-        net = self.shapes
-        # keep track of PEs for each layer in a dictionary with same keys as net
-        pe_index = dict.fromkeys(net.keys(), 0)
-        bin_index = 0
-        for bin in solution:
+        for bin in self.bin_spec:
             # identify bin width (max of all widths), depth (sum of all depths)
-            bin_width = 0
-            bin_depth = 0
+            bin_width = self.bin_spec[bin]["width"]
             bin_data = []
-            for layer in solution[bin]:
-                layer_width = net[layer]["SIMD"] * net[layer]["DataType"].bitwidth()
-                bin_width = max(bin_width, layer_width)
-                bin_depth += net[layer]["WMEM"]
-            # parse again, to get data
-            layer_index = 0
-            for layer in solution[bin]:
+            nstreams = len(self.bin_spec[bin]["streams"])
+            # get data
+            for stream in self.bin_spec[bin]["streams"]:
                 # get a PE memory and pack it into hex list
-                pe_weight_tensor = net[layer]["Values"][pe_index[layer]]
+                pe_weight_tensor = stream["data"]
                 idimbits = roundup_to_integer_multiple(bin_width, 4)
                 bin_data += list(
                     pack_innermost_dim_as_hex_string(
-                        pe_weight_tensor, net[layer]["DataType"], idimbits, prefix=""
+                        pe_weight_tensor, stream["dtype"], idimbits, prefix=""
                     )
                 )
-                pe_index[layer] += 1
-                layer_index += 1
 
             # create dedicated folder for bin artefacts
-            directory = tcl_folder + "/bin" + str(bin_index)
+            directory = tcl_folder + "/" + bin
             if not os.path.exists(directory):
                 os.makedirs(directory)
 
             # write these to files, one per bin
-            with open(directory + "/memory.dat", "w") as f:
-                for item in bin_data:
-                    f.write("%s\n" % item)
-
-            # write data to files, in 1k blocks
-            block_idx = 0
-            for line_idx in range(len(bin_data)):
-                if (line_idx % 1024) == 0:
-                    f = open(directory + "/memblock_" + str(block_idx) + ".dat", "w")
-                f.write("%s\n" % bin_data[line_idx])
-                if (line_idx % 1024) == 1023:
-                    f.close()
-                    block_idx += 1
-
-            bin_index += 1
+            if nstreams <= 2:
+                # write single readmemh file for 1 or 2 streams
+                with open(directory + "/memblock_0.dat", "w") as f:
+                    for item in bin_data:
+                        f.write("%s\n" % item)
+            else:
+                # write data to files, in 1k blocks
+                block_idx = 0
+                for line_idx in range(len(bin_data)):
+                    if (line_idx % 1024) == 0:
+                        f = open(
+                            directory + "/memblock_" + str(block_idx) + ".dat", "w"
+                        )
+                    f.write("%s\n" % bin_data[line_idx])
+                    if (line_idx % 1024) == 1023:
+                        f.close()
+                        block_idx += 1
 
     def blackboxfunction(self):
         pass
@@ -275,7 +320,7 @@ class MemStreamer(HLSCustomOp):
         #    -width at source and depth at source (number of words before repeating)
         #    -width at destination and depth at destination
         #     (number of words before repeating)
-        #    -substream index - determines order in case this needs to be comebined
+        #    -substream index - determines order in case this needs to be combined
         #     with another stream to serve a PE
         #    -width and depth at source don't need to match width and depth at
         #     destination but must be convertible to the width and depth at destination
@@ -290,7 +335,6 @@ class MemStreamer(HLSCustomOp):
         self.connectivity = {}
         pe_index = dict.fromkeys(net.keys(), 0)
         stream_idx = 0
-        bin_idx = 0
         for bin in solution:
             bin_strm_idx = 0
             for layer in solution[bin]:
@@ -303,6 +347,7 @@ class MemStreamer(HLSCustomOp):
                 self.connectivity[sname]["src"] = {"name": bin, "s_idx": bin_strm_idx}
                 self.connectivity[sname]["waypoints"] = []
                 self.connectivity[sname]["attributes"] = {}
+                self.connectivity[sname]["attributes"]["dtype"] = net[layer]["DataType"]
                 self.connectivity[sname]["attributes"]["dst_w"] = (
                     net[layer]["SIMD"] * net[layer]["DataType"].bitwidth()
                 )
@@ -313,11 +358,30 @@ class MemStreamer(HLSCustomOp):
                 self.connectivity[sname]["attributes"]["src_h"] = self.connectivity[
                     sname
                 ]["attributes"]["dst_h"]
-                self.connectivity[sname]["attributes"]["substrm_idx"] = 0
+                self.connectivity[sname]["attributes"]["substrm_idx"] = None
+                self.connectivity[sname]["data"] = copy.deepcopy(
+                    self.shapes[layer]["Values"][pe_index[layer]]
+                )
                 pe_index[layer] += 1
                 bin_strm_idx += 1
                 stream_idx += 1
-            bin_idx += 1
+            # create an even number of streams per bin by
+            # splitting last stream into half-height substreams
+            if bin_strm_idx % 2 != 0 and bin_strm_idx > 2:
+                new_sname = "stream" + str(stream_idx)
+                self.connectivity[new_sname] = copy.deepcopy(self.connectivity[sname])
+                self.connectivity[sname]["attributes"]["substrm_idx"] = 0
+                self.connectivity[new_sname]["attributes"]["substrm_idx"] = 1
+                self.connectivity[sname]["attributes"]["src_h"] //= 2
+                self.connectivity[new_sname]["attributes"]["src_h"] //= 2
+                self.connectivity[new_sname]["src"]["s_idx"] = bin_strm_idx
+                self.connectivity[sname]["data"] = copy.deepcopy(
+                    self.shapes[layer]["Values"][pe_index[layer] - 1][::2]
+                )
+                self.connectivity[new_sname]["data"] = copy.deepcopy(
+                    self.shapes[layer]["Values"][pe_index[layer] - 1][1::2]
+                )
+                stream_idx += 1
 
     def build_bin_spec(self):
         """Generate spec of bin - width and height,
@@ -332,10 +396,19 @@ class MemStreamer(HLSCustomOp):
             bin = self.connectivity[stream]["src"]["name"]
             if bin not in self.bin_spec.keys():
                 self.bin_spec[bin] = {"streams": [], "width": 0, "height": 0}
-            s_width = self.connectivity[stream]["attributes"]["dst_w"]
-            s_height = self.connectivity[stream]["attributes"]["dst_h"]
+            s_width = self.connectivity[stream]["attributes"]["src_w"]
+            s_height = self.connectivity[stream]["attributes"]["src_h"]
+            s_data = self.connectivity[stream]["data"]
+            s_dtype = self.connectivity[stream]["attributes"]["dtype"]
             self.bin_spec[bin]["streams"].append(
-                {"name": stream, "width": s_width, "height": s_height, "offset": 0}
+                {
+                    "name": stream,
+                    "width": s_width,
+                    "height": s_height,
+                    "offset": 0,
+                    "data": s_data,
+                    "dtype": s_dtype,
+                }
             )
         # go through streams and set offset plus bin overall width and height
         for bin in self.bin_spec:
@@ -370,38 +443,20 @@ class MemStreamer(HLSCustomOp):
         )
         tcl.append("update_ip_catalog\n")
 
-        # Step 0: create memory clocks
-        mmcm_f_mult = float(clk_ns)  # we want 1000 MHz / computefreqmhz
-        mmcm_f_div = mmcm_f_mult / 2  # to get memfreqmhz = 2*computefreqmhz
-        tcl.append("create_bd_cell -type ip -vlnv xilinx.com:ip:clk_wiz:6.0 memclk\n")
-        tcl.append(
-            "connect_bd_net [get_bd_ports ap_clk] [get_bd_pins memclk/clk_in1]\n"
-        )
-        tcl.append(
-            "set_property -dict "
-            + "[list CONFIG.PRIM_IN_FREQ.VALUE_SRC USER] [get_bd_cells memclk]\n"
-        )
-        tcl.append(
-            "set_property "
-            + "-dict [list CONFIG.PRIM_IN_FREQ $computefreqmhz] [get_bd_cells memclk]\n"
-        )
-        tcl.append(
-            "set_property -dict "
-            + "[list CONFIG.USE_LOCKED {false} CONFIG.USE_RESET {false}] "
-            + "[get_bd_cells memclk]\n"
-        )
-        tcl.append(
-            "set_property -dict "
-            + "[list CONFIG.OVERRIDE_MMCM {true} CONFIG.MMCM_CLKFBOUT_MULT_F {"
-            + ("%.2f" % mmcm_f_mult)
-            + "}] [get_bd_cells memclk]\n"
-        )
-        tcl.append(
-            "set_property -dict [list CONFIG.MMCM_CLKOUT0_DIVIDE_F {"
-            + ("%.2f" % mmcm_f_div)
-            + "}] [get_bd_cells memclk]\n"
-        )
-        tcl.append("save_bd_design\n")
+        # Step 0: create memory clocks and resets
+        max_streams_per_bin = 0
+        for bin in self.bin_spec:
+            max_streams_per_bin = max(
+                max_streams_per_bin, len(self.bin_spec[bin]["streams"])
+            )
+        if max_streams_per_bin > 2:
+            # if any bin produces more than 2 streams, we need a high freq clock
+            mmcm_f_mult = float(clk_ns)  # we want 1000 MHz / computefreqmhz
+            mmcm_f_div = mmcm_f_mult / 2  # to get memfreqmhz = 2*computefreqmhz
+            tclcode = memclkrst_template
+            tclcode = tclcode.replace("$CLKMULT$", ("%.2f" % mmcm_f_mult))
+            tclcode = tclcode.replace("$CLKDIV$", ("%.2f" % mmcm_f_div))
+            tcl.append(tclcode)
 
         # Step 1: instantiate RTL streamers for bins
         for bin in self.bin_spec:
@@ -451,7 +506,8 @@ class MemStreamer(HLSCustomOp):
                     + "/aclk]\n"
                 )
                 tcl.append(
-                    "connect_bd_net [get_bd_ports ap_rst_n] [get_bd_pins "
+                    "connect_bd_net "
+                    + "[get_bd_pins psrst_memclk/peripheral_aresetn] [get_bd_pins "
                     + bin
                     + "/aresetn]\n"
                 )
@@ -469,6 +525,9 @@ class MemStreamer(HLSCustomOp):
             for i in range(nstreams):
                 stream = self.bin_spec[bin]["streams"][i]
                 s_width = stream["width"]
+                assert (
+                    s_width % 8 == 0 and s_width / 8 >= 1
+                ), "Stream widths must be multiples of 1 byte"
                 s_height = stream["height"]
                 s_offset = stream["offset"]
                 tcl.append(
@@ -504,9 +563,15 @@ class MemStreamer(HLSCustomOp):
         # (make sure to connect afull back to the bin)
         fifo_idx = 0
         for stream in self.connectivity:
-            fifo = "fifo" + str(fifo_idx)
             bin = self.connectivity[stream]["src"]["name"]
             bin_out_idx = self.connectivity[stream]["src"]["s_idx"]
+            if len(self.bin_spec[bin]["streams"]) <= 2:
+                # no FIFO if 1 or 2 streams, set waypoint to bin output
+                self.connectivity[stream]["waypoints"].append(
+                    {"instance": bin, "port": "m_axis_" + str(bin_out_idx)}
+                )
+                continue
+            fifo = "fifo" + str(fifo_idx)
             tcl.append(
                 "create_bd_cell -type ip -vlnv xilinx.com:ip:axis_data_fifo:2.0 "
                 + fifo
@@ -521,40 +586,27 @@ class MemStreamer(HLSCustomOp):
                 + fifo
                 + "]\n"
             )
-            if len(self.bin_spec[bin]["streams"]) > 2:
-                # this needs to be async fifo
-                tcl.append(
-                    "set_property -dict [list CONFIG.IS_ACLK_ASYNC {1}] [get_bd_cells "
-                    + fifo
-                    + "]\n"
-                )
-                tcl.append(
-                    "connect_bd_net [get_bd_pins memclk/clk_out1] [get_bd_pins "
-                    + fifo
-                    + "/s_axis_aclk]\n"
-                )
-                tcl.append(
-                    "connect_bd_net [get_bd_ports ap_clk] [get_bd_pins "
-                    + fifo
-                    + "/m_axis_aclk]\n"
-                )
-                tcl.append(
-                    "connect_bd_net [get_bd_ports ap_rst_n] [get_bd_pins "
-                    + fifo
-                    + "/s_axis_aresetn]\n"
-                )
-            else:
-                # this can (and should) be sync fifo
-                tcl.append(
-                    "connect_bd_net [get_bd_ports ap_clk] [get_bd_pins "
-                    + fifo
-                    + "/s_axis_aclk]\n"
-                )
-                tcl.append(
-                    "connect_bd_net [get_bd_ports ap_rst_n] [get_bd_pins "
-                    + fifo
-                    + "/s_axis_aresetn]\n"
-                )
+            tcl.append(
+                "set_property -dict [list CONFIG.IS_ACLK_ASYNC {1}] [get_bd_cells "
+                + fifo
+                + "]\n"
+            )
+            tcl.append(
+                "connect_bd_net [get_bd_pins memclk/clk_out1] [get_bd_pins "
+                + fifo
+                + "/s_axis_aclk]\n"
+            )
+            tcl.append(
+                "connect_bd_net [get_bd_ports ap_clk] [get_bd_pins "
+                + fifo
+                + "/m_axis_aclk]\n"
+            )
+            tcl.append(
+                "connect_bd_net "
+                + "[get_bd_pins psrst_memclk/peripheral_aresetn] [get_bd_pins "
+                + fifo
+                + "/s_axis_aresetn]\n"
+            )
             tcl.append(
                 "connect_bd_intf_net [get_bd_intf_pins "
                 + bin
@@ -579,7 +631,123 @@ class MemStreamer(HLSCustomOp):
             fifo_idx += 1
         tcl.append("save_bd_design\n")
 
-        # Step 3: instantiate combiner(s) (if needed)
+        # Step 3: merge substreams
+        merged_substreams = []
+        for ref_stream in self.connectivity:
+            # for each stream, detect substreams
+            # skip of no substreams
+            if self.connectivity[ref_stream]["attributes"]["substrm_idx"] is None:
+                continue
+            # skip if this layer/PE combination has already been solved
+            if ref_stream in merged_substreams:
+                continue
+            substreams = {
+                k: v
+                for k, v in self.connectivity.items()
+                if v["dst"] == self.connectivity[ref_stream]["dst"]
+            }
+            if len(substreams) > 1:
+                # if multiple substreams exist, instantiate combiner and DWC for them
+                # combiner for up to 16 substreams (we only really need 2)
+                comb = (
+                    "sc_"
+                    + self.connectivity[ref_stream]["dst"]["name"]
+                    + "_"
+                    + str(self.connectivity[ref_stream]["dst"]["pe_idx"])
+                )
+                tcl.append(
+                    "create_bd_cell -type ip -vlnv xilinx.com:ip:axis_combiner:1.1 "
+                    + comb
+                    + "\n"
+                )
+                tcl.append(
+                    "set_property -dict [list CONFIG.NUM_SI "
+                    + str(len(substreams))
+                    + "] [get_bd_cells "
+                    + comb
+                    + "]\n"
+                )
+                tcl.append(
+                    "connect_bd_net [get_bd_ports ap_clk] [get_bd_pins "
+                    + comb
+                    + "/aclk]\n"
+                )
+                tcl.append(
+                    "connect_bd_net [get_bd_ports ap_rst_n] [get_bd_pins "
+                    + comb
+                    + "/aresetn]\n"
+                )
+                for substream in substreams:
+                    source_port = (
+                        self.connectivity[substream]["waypoints"][-1]["instance"]
+                        + "/"
+                        + self.connectivity[substream]["waypoints"][-1]["port"]
+                    )
+                    tcl.append(
+                        "connect_bd_intf_net [get_bd_intf_pins "
+                        + source_port
+                        + "] [get_bd_intf_pins "
+                        + comb
+                        + "/S"
+                        + (
+                            "%02d"
+                            % self.connectivity[substream]["attributes"]["substrm_idx"]
+                        )
+                        + "_AXIS]\n"
+                    )
+                    self.connectivity[substream]["waypoints"].append(
+                        {"instance": comb, "port": "M_AXIS"}
+                    )
+                # output of combiner to DWC
+                dwc = (
+                    "dwc_"
+                    + self.connectivity[ref_stream]["dst"]["name"]
+                    + "_"
+                    + str(self.connectivity[ref_stream]["dst"]["pe_idx"])
+                )
+                tcl.append(
+                    "create_bd_cell -type ip -vlnv xilinx.com:ip:axis_dwidth_converter:1.1 "
+                    + dwc
+                    + "\n"
+                )
+                tcl.append(
+                    "set_property -dict [list CONFIG.M_TDATA_NUM_BYTES "
+                    + str(
+                        int(
+                            math.ceil(
+                                self.connectivity[ref_stream]["attributes"]["dst_w"] / 8
+                            )
+                        )
+                    )
+                    + "] [get_bd_cells "
+                    + dwc
+                    + "]\n"
+                )
+                tcl.append(
+                    "connect_bd_net [get_bd_ports ap_clk] [get_bd_pins "
+                    + dwc
+                    + "/aclk]\n"
+                )
+                tcl.append(
+                    "connect_bd_net [get_bd_ports ap_rst_n] [get_bd_pins "
+                    + dwc
+                    + "/aresetn]\n"
+                )
+                tcl.append(
+                    "connect_bd_intf_net [get_bd_intf_pins "
+                    + comb
+                    + "/M_AXIS] [get_bd_intf_pins "
+                    + dwc
+                    + "/S_AXIS]\n"
+                )
+                for substream in substreams:
+                    self.connectivity[substream]["waypoints"].append(
+                        {"instance": dwc, "port": "M_AXIS"}
+                    )
+                    merged_substreams.append(substream)
+        tcl.append("save_bd_design\n")
+
+        # Step 4: instantiate combiner(s) (if needed)
         # inspect network to determine the number of PEs for each layer
         # which gives us the number of inputs to the combiner tree
         for layer in self.shapes:
@@ -660,9 +828,18 @@ class MemStreamer(HLSCustomOp):
                     )
         tcl.append("save_bd_design\n")
 
-        # Step 4: connect combiner(s) to FIFOs
+        # Step 5: connect combiner(s) to FIFOs or substream merge logic
         for stream in self.connectivity:
             layer = self.connectivity[stream]["dst"]["name"]
+            # skip substreams with index > 0
+            if (
+                self.connectivity[stream]["attributes"]["substrm_idx"] is not None
+                and self.connectivity[stream]["attributes"]["substrm_idx"] > 0
+            ):
+                continue
+            # skip if this layer only has one PE
+            if self.shapes[layer]["PE"] == 1:
+                continue
             target_pe = self.connectivity[stream]["dst"]["pe_idx"]
             # connect stream to combiner(s)
             combiner_index = math.floor(target_pe / 16)
@@ -692,7 +869,7 @@ class MemStreamer(HLSCustomOp):
                 )
         tcl.append("save_bd_design\n")
 
-        # Step 5: create/connect stream outputs
+        # Step 6: create/connect stream outputs
         connected_outputs = []
         for stream in self.connectivity:
             source_port = (

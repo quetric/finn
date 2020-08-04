@@ -244,7 +244,25 @@ class StreamingFCLayer_Batch(HLSCustomOp):
         D_in = self.get_nodeattr("MW")
         D_out = self.get_nodeattr("MH")
         omega = (D_in * D_out) / (Q * P)
-        return P * (math.ceil(omega / 512)) * (math.ceil((Q * W) / 36))
+        mem_width = Q * W * P
+        mmode = self.get_nodeattr("mem_mode")
+        mstyle = self.get_nodeattr("ram_style")
+        if mmode == "decoupled" and mstyle == "distributed":
+            return 0
+        # assuming SDP mode RAMB18s (see UG573 Table 1-10)
+        # assuming decoupled (RTL) memory, which is more efficient than const (HLS)
+        if mem_width == 1:
+            return math.ceil(omega / 16384)
+        elif mem_width == 2:
+            return math.ceil(omega / 8192)
+        elif mem_width <= 4:
+            return (math.ceil(omega / 4096)) * (math.ceil(mem_width / 4))
+        elif mem_width <= 9:
+            return (math.ceil(omega / 2048)) * (math.ceil(mem_width / 9))
+        elif mem_width <= 18:
+            return (math.ceil(omega / 1024)) * (math.ceil(mem_width / 18))
+        else:
+            return (math.ceil(omega / 512)) * (math.ceil(mem_width / 36))
 
     def bram_efficiency_estimation(self):
         wdt = self.get_weight_datatype()

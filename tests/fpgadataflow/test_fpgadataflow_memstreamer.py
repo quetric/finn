@@ -39,7 +39,9 @@ from finn.transformation.fpgadataflow.hlssynth_ip import HLSSynthIP
 from finn.transformation.general import GiveUniqueNodeNames
 
 
-def make_memstreamer_modelwrapper(nstreams, pe, simd, wmem, odt, values, strategy):
+def make_memstreamer_modelwrapper(
+    nstreams, pe, simd, wmem, odt, values, strategy, height
+):
 
     outp = []
     for i in range(nstreams):
@@ -55,6 +57,7 @@ def make_memstreamer_modelwrapper(nstreams, pe, simd, wmem, odt, values, strateg
         [x.name for x in outp],
         domain="finn",
         backend="fpgadataflow",
+        max_height=height,
         nstreams=nstreams,
         PE=pe,
         SIMD=simd,
@@ -78,12 +81,14 @@ def make_memstreamer_modelwrapper(nstreams, pe, simd, wmem, odt, values, strateg
 
 # number of streams
 @pytest.mark.parametrize("nstreams", [5])
+# number of streams
+@pytest.mark.parametrize("height", [3, 4])
 # intra or inter-layer packing
 @pytest.mark.parametrize("strategy", ["intra", "inter"])
 # number of iterations (tests with random starting seeds)
 @pytest.mark.parametrize("iteration", range(1))
 @pytest.mark.vivado
-def test_fpgadataflow_memstreamer(nstreams, strategy, iteration):
+def test_fpgadataflow_memstreamer(nstreams, strategy, iteration, height):
     # generate attributes and data
     odt = []
     simd = []
@@ -92,7 +97,7 @@ def test_fpgadataflow_memstreamer(nstreams, strategy, iteration):
     values = []
     for i in range(nstreams):
         odt.append(random.choice([DataType.BIPOLAR, DataType.INT2]))
-        simd.append(random.choice([4, 8, 16]))
+        simd.append(random.choice([8, 16]))
         pe.append(random.choice([4, 8]))
         wmem.append(random.choice([256, 288, 576]))
         tensor_shape = (pe[i], wmem[i], simd[i])
@@ -120,7 +125,7 @@ def test_fpgadataflow_memstreamer(nstreams, strategy, iteration):
         values.append(tensor)
 
     model = make_memstreamer_modelwrapper(
-        nstreams, pe, simd, wmem, odt, values, strategy
+        nstreams, pe, simd, wmem, odt, values, strategy, height
     )
 
     # do IP preparation and check result
