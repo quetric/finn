@@ -445,14 +445,16 @@ class MemStreamer(HLSCustomOp):
 
         # Step 0: create memory clocks and resets
         max_streams_per_bin = 0
-        for bin in self.bin_spec:
-            max_streams_per_bin = max(
-                max_streams_per_bin, len(self.bin_spec[bin]["streams"])
-            )
+        for bin in self.packed_shapes:
+            max_streams_per_bin = max(max_streams_per_bin, len(self.packed_shapes[bin]))
         if max_streams_per_bin > 2:
             # if any bin produces more than 2 streams, we need a high freq clock
-            mmcm_f_mult = float(clk_ns)  # we want 1000 MHz / computefreqmhz
-            mmcm_f_div = mmcm_f_mult / 2  # to get memfreqmhz = 2*computefreqmhz
+            mmcm_f_mult = (
+                math.ceil(float(clk_ns) / 0.125) * 0.125
+            )  # we want 1000 MHz for VCO
+            mmcm_f_div = (
+                math.floor(((2 * mmcm_f_mult) / max_streams_per_bin) / 0.125) * 0.125
+            )
             tclcode = memclkrst_template
             tclcode = tclcode.replace("$CLKMULT$", ("%.2f" % mmcm_f_mult))
             tclcode = tclcode.replace("$CLKDIV$", ("%.2f" % mmcm_f_div))
