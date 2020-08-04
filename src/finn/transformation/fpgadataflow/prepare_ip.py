@@ -31,6 +31,7 @@ import finn.custom_op.registry as registry
 from finn.transformation import Transformation
 from finn.util.basic import make_build_dir
 from finn.util.fpgadataflow import is_fpgadataflow_node
+import warnings
 
 
 def _codegen_single_node(node, model, fpgapart, clk):
@@ -43,14 +44,23 @@ def _codegen_single_node(node, model, fpgapart, clk):
         inst = registry.custom_op[op_type](node)
         # get the path of the code generation directory
         code_gen_dir = inst.get_nodeattr("code_gen_dir_ipgen")
+
         # ensure that there is a directory
+        # if there is, do nothing, Assume it is already generated
         if code_gen_dir == "" or not os.path.isdir(code_gen_dir):
             code_gen_dir = make_build_dir(
                 prefix="code_gen_ipgen_" + str(node.name) + "_"
             )
             inst.set_nodeattr("code_gen_dir_ipgen", code_gen_dir)
-        # ensure that there is generated code inside the dir
-        inst.code_generation_ipgen(model, fpgapart, clk)
+
+            # ensure that there is generated code inside the dir
+            inst.code_generation_ipgen(model, fpgapart, clk)
+        else:
+            warnings.warn(
+                str(node.name)
+                + ": code_gen_dir_ipgen already exists."
+                + " Assuming that code is generated"
+            )
     except KeyError:
         # exception if op_type is not supported
         raise Exception("Custom op_type %s is currently not supported." % op_type)

@@ -29,6 +29,7 @@
 import finn.custom_op.registry as registry
 from finn.util.fpgadataflow import is_fpgadataflow_node
 from finn.transformation import NodeLocalTransformation
+import warnings
 
 
 class HLSSynthIP(NodeLocalTransformation):
@@ -60,13 +61,24 @@ class HLSSynthIP(NodeLocalTransformation):
                 attribute "code_gen_dir_ipgen" is empty. Please run
                 transformation PrepareIP first."""
                 # call the compilation function for this node
-                inst.ipgen_singlenode_code()
-                # ensure that executable path is now set
-                assert (
-                    inst.get_nodeattr("ipgen_path") != ""
-                ), """Transformation
-                HLSSynthIP was not successful. Node attribute "ipgen_path"
-                is empty."""
+
+                # check if the executable path is set
+                # if it is, Assume it is already generated
+                if inst.get_nodeattr("ipgen_path") != "":
+                    warnings.warn(
+                        str(node.name)
+                        + ": ipgen_path already exists."
+                        + " Assuming csynth is done and correct"
+                    )
+                else:
+                    inst.ipgen_singlenode_code()
+                    # ensure that executable path is now set
+                    assert (
+                        inst.get_nodeattr("ipgen_path") != ""
+                    ), """Transformation
+                    HLSSynthIP was not successful. Node attribute "ipgen_path"
+                    is empty."""
+
             except KeyError:
                 # exception if op_type is not supported
                 raise Exception(
