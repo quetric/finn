@@ -270,6 +270,8 @@ class StreamingFCLayer_Batch(HLSCustomOp):
         D_in = self.get_nodeattr("MW")
         D_out = self.get_nodeattr("MH")
         bram16_est = self.bram_estimation()
+        if bram16_est == 0:
+            return 1
         wbits = W * D_in * D_out
         bram16_est_capacity = bram16_est * 36 * 512
         return wbits / bram16_est_capacity

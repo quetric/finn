@@ -349,6 +349,7 @@ class VitisBuild(Transformation):
         floorplan_file=None,
         pack_strategy="inter",
         pack_global=False,
+        pack_height=4,
     ):
         super().__init__()
         self.fpga_part = fpga_part
@@ -358,6 +359,7 @@ class VitisBuild(Transformation):
         self.user_floorplan_file = floorplan_file
         self.pack_strategy = pack_strategy
         self.pack_global = pack_global
+        self.pack_height = pack_height
 
     def apply(self, model):
         _check_vitis_envvars()
@@ -371,7 +373,9 @@ class VitisBuild(Transformation):
             InsertDWC(),
             Floorplan(floorplan_file=self.user_floorplan_file),
             CreateMemSubsystem(
-                strategy=self.pack_strategy, ignore_slr=self.pack_global
+                strategy=self.pack_strategy,
+                ignore_slr=self.pack_global,
+                max_height=self.pack_height,
             ),
             CreateDataflowPartition(),
         ]

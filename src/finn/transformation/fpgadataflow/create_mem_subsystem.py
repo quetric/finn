@@ -40,10 +40,11 @@ class CreateMemSubsystem(Transformation):
     the various weight buffers are efficiently packed into block RAMs and
     the memory subsystem serves external weight interface streams."""
 
-    def __init__(self, strategy="inter", ignore_slr=False):
+    def __init__(self, strategy="inter", ignore_slr=False, max_height=4):
         super().__init__()
         self.strategy = strategy
         self.ignore_slr = ignore_slr
+        self.max_bin_height = max_height
 
     def apply(self, model):
         # parse the graph, looking for fc layers with BRAM efficiency < 0.8
@@ -131,6 +132,7 @@ class CreateMemSubsystem(Transformation):
                 weights=values,
                 dataType=[x.value for x in dataType],
                 strategy=self.strategy,
+                max_height=self.max_bin_height,
             )
             if not self.ignore_slr:
                 getCustomOp(memstreamer_node).set_nodeattr("slr", slr)
