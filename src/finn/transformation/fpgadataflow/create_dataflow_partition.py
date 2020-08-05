@@ -82,23 +82,25 @@ class CreateDataflowPartition(Transformation):
                     df_model.graph.node.remove(node_to_remove)
                 # identify the entry and exit points for the dataflow part
                 # set df graph in/out to be df_in/df_out
-                # first remove existing graph inputs/outputs
-                for i in range(len(df_model.graph.input)):
-                    df_model.graph.input.remove(df_model.graph.input[i])
-                for i in range(len(df_model.graph.output)):
-                    df_model.graph.output.remove(df_model.graph.output[i])
-
                 df_in = []
                 if len(df_model.graph.node[0].input) > 0:
                     df_in.append(df_model.graph.node[0].input[0])
                     df_in_vi = df_model.get_tensor_valueinfo(df_in[0])
+                    for i in range(len(df_model.graph.input)):
+                        df_model.graph.input.remove(df_model.graph.input[0])
                     df_model.graph.input.insert(0, df_in_vi)
 
                 df_out = []
+                df_out_vi = []
                 for i in range(len(df_model.graph.node[-1].output)):
                     df_out.append(df_model.graph.node[-1].output[i])
-                    df_out_vi = df_model.get_tensor_valueinfo(df_out[-1])
-                    df_model.graph.output.insert(i, df_out_vi)
+                    df_out_vi.append(df_model.get_tensor_valueinfo(df_out[-1]))
+
+                for i in range(len(df_model.graph.output)):
+                    df_model.graph.output.remove(df_model.graph.output[0])
+
+                for i in range(len(df_out_vi)):
+                    df_model.graph.output.insert(i, df_out_vi[i])
                 # parse StreamingFCLayers looking for external weight memories
                 fc_extw_nodes = filter(
                     lambda x: x.op_type == "StreamingFCLayer_Batch"

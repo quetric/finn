@@ -50,12 +50,6 @@ class CreateMemSubsystem(Transformation):
         # set the fc node to external mem_mode
         # put the parameters of those layers into lists: PE, SIMD, WMEM, weights,
         # create a MemStreamer for those layers
-        pe = []
-        simd = []
-        wmem = []
-        values = []
-        dataType = []
-        outp = []
         # gather info about the floorplan - how many SLRs?
         # we will add one mem subsystem per SLR
         # TODO: analysis pass to gather floorplan info
@@ -76,6 +70,12 @@ class CreateMemSubsystem(Transformation):
             highest_partition_id = max(pid, highest_partition_id)
         # insert a mem subsystem for each SLR
         for slr in range(nslr + 1):
+            pe = []
+            simd = []
+            wmem = []
+            values = []
+            dataType = []
+            outp = []
             for node in model.graph.node:
                 node_inst = getCustomOp(node)
                 if node.op_type != "StreamingFCLayer_Batch":
