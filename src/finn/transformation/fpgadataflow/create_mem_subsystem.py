@@ -90,6 +90,8 @@ class CreateMemSubsystem(Transformation):
                 if (
                     node_inst.bram_efficiency_estimation() < 0.8
                     and node_inst.calc_wmem() > 128
+                    and node_inst.get_weightstream_width() % 8 == 0
+                    and node_inst.get_nodeattr("SIMD") % 8 == 0
                 ):
                     pe.append(node_inst.get_nodeattr("PE"))
                     simd.append(node_inst.get_nodeattr("SIMD"))

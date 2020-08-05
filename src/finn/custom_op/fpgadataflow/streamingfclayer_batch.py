@@ -259,7 +259,7 @@ class StreamingFCLayer_Batch(HLSCustomOp):
             return (math.ceil(omega / 4096)) * (math.ceil(mem_width / 4))
         elif mem_width <= 9:
             return (math.ceil(omega / 2048)) * (math.ceil(mem_width / 9))
-        elif mem_width <= 18:
+        elif mem_width <= 18 or omega > 512:
             return (math.ceil(omega / 1024)) * (math.ceil(mem_width / 18))
         else:
             return (math.ceil(omega / 512)) * (math.ceil(mem_width / 36))
