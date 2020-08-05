@@ -49,7 +49,7 @@ connect_bd_net [get_bd_ports ap_clk] [get_bd_pins memclk/clk_in1]
 set_property -dict [list CONFIG.PRIM_IN_FREQ.VALUE_SRC USER] [get_bd_cells memclk]
 set_property -dict [list CONFIG.PRIM_IN_FREQ $computefreqmhz] [get_bd_cells memclk]
 set_property -dict [list CONFIG.USE_LOCKED {false} CONFIG.USE_RESET {false}] [get_bd_cells memclk]
-set_property -dict [list CONFIG.OVERRIDE_MMCM {true} CONFIG.MMCM_CLKFBOUT_MULT_F {$CLKMULT$}] [get_bd_cells memclk]
+set_property -dict [list CONFIG.OVERRIDE_MMCM {true} CONFIG.MMCM_CLKFBOUT_MULT_F {$CLKMULT$} CONFIG.MMCM_DIVCLK_DIVIDE {1.00}] [get_bd_cells memclk]
 set_property -dict [list CONFIG.MMCM_CLKOUT0_DIVIDE_F {$CLKDIV$}] [get_bd_cells memclk]
 create_bd_cell -type ip -vlnv xilinx.com:ip:proc_sys_reset:5.0 psrst_memclk
 connect_bd_net [get_bd_ports ap_rst_n] [get_bd_pins psrst_memclk/ext_reset_in]
