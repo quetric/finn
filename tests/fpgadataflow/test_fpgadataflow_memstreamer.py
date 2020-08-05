@@ -104,7 +104,7 @@ def test_fpgadataflow_memstreamer(nstreams, strategy, iteration, height):
         if odt[i] == DataType.BIPOLAR:
             tensor = (
                 np.random.randint(
-                    DataType.BINARY.min(), DataType.BINARY.max(), size=tensor_shape
+                    DataType.BINARY.min(), DataType.BINARY.max() + 1, size=tensor_shape
                 )
                 .flatten()
                 .astype(float)
@@ -112,7 +112,7 @@ def test_fpgadataflow_memstreamer(nstreams, strategy, iteration, height):
             tensor = 2 * tensor - 1
         else:
             tensor = (
-                np.random.randint(odt[i].min(), odt[i].max(), size=tensor_shape)
+                np.random.randint(odt[i].min(), odt[i].max() + 1, size=tensor_shape)
                 .flatten()
                 .astype(float)
             )
