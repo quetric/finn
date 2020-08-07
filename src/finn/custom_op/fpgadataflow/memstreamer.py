@@ -456,8 +456,8 @@ class MemStreamer(HLSCustomOp):
                 math.floor(((2 * mmcm_f_mult) / max_streams_per_bin) / 0.125) * 0.125
             )
             tclcode = memclkrst_template
-            tclcode = tclcode.replace("$CLKMULT$", ("%.2f" % mmcm_f_mult))
-            tclcode = tclcode.replace("$CLKDIV$", ("%.2f" % mmcm_f_div))
+            tclcode = tclcode.replace("$CLKMULT$", ("%.3f" % mmcm_f_mult))
+            tclcode = tclcode.replace("$CLKDIV$", ("%.3f" % mmcm_f_div))
             tcl.append(tclcode)
 
         # Step 1: instantiate RTL streamers for bins
