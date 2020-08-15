@@ -140,6 +140,7 @@ class CreateDataflowPartition(Transformation):
                     model=df_model_filename,
                     partition_id=target_partition_id,
                     slr=slr,
+                    domain="finn",
                 )
                 non_df_model.graph.node.insert(df_start_ind, df_node)
                 model = non_df_model

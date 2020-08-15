@@ -41,7 +41,6 @@ from finn.transformation.fpgadataflow.create_dataflow_partition import (
 )
 from finn.transformation.fpgadataflow.insert_dwc import InsertDWC
 from finn.transformation.fpgadataflow.insert_fifo import InsertFIFO
-from finn.transformation.fpgadataflow.insert_tlastmarker import InsertTLastMarker
 from finn.transformation.fpgadataflow.insert_iodma import InsertIODMA
 from finn.transformation.fpgadataflow.prepare_ip import PrepareIP
 from finn.transformation.fpgadataflow.hlssynth_ip import HLSSynthIP
@@ -50,9 +49,10 @@ from finn.transformation.fpgadataflow.replace_verilog_relpaths import (
 )
 from finn.transformation.fpgadataflow.create_stitched_ip import CreateStitchedIP
 from finn.transformation.fpgadataflow.floorplan import Floorplan
-from finn.transformation.fpgadataflow.make_pynq_driver import MakePYNQDriver
 from finn.transformation.general import GiveReadableTensorNames, GiveUniqueNodeNames
 from finn.transformation.infer_data_layouts import InferDataLayouts
+from shutil import copy
+from finn.transformation.fpgadataflow.make_pynq_driver import MakePYNQDriver
 
 from . import templates
 
@@ -90,9 +90,10 @@ class MakeZYNQProject(Transformation):
     value.
     """
 
-    def __init__(self, platform):
+    def __init__(self, platform, enable_debug=False):
         super().__init__()
         self.platform = platform
+        self.enable_debug = 1 if enable_debug else 0
 
     def apply(self, model):
 
@@ -222,6 +223,7 @@ class MakeZYNQProject(Transformation):
                     self.platform,
                     pynq_part_map[self.platform],
                     config,
+                    self.enable_debug,
                     get_num_default_workers(),
                 )
             )
@@ -239,24 +241,47 @@ class MakeZYNQProject(Transformation):
         bash_command = ["bash", synth_project_sh]
         process_compile = subprocess.Popen(bash_command, stdout=subprocess.PIPE)
         process_compile.communicate()
+        bitfile_name = (
+            vivado_pynq_proj_dir + "/finn_zynq_link.runs/impl_1/top_wrapper.bit"
+        )
+        if not os.path.isfile(bitfile_name):
+            raise Exception("Synthesis failed, no bitfile found")
+        deploy_bitfile_name = vivado_pynq_proj_dir + "/resizer.bit"
+        copy(bitfile_name, deploy_bitfile_name)
+        # set bitfile attribute
+        model.set_metadata_prop("vivado_pynq_bitfile", deploy_bitfile_name)
+        # set platform attribute for correct remote execution
+        model.set_metadata_prop("platform", "zynq-iodma")
+        hwh_name = (
+            vivado_pynq_proj_dir
+            + "/finn_zynq_link.srcs/sources_1/bd/top/hw_handoff/top.hwh"
+        )
+        if not os.path.isfile(hwh_name):
+            raise Exception("Synthesis failed, no hardware handoff file found")
+        deploy_hwh_name = vivado_pynq_proj_dir + "/resizer.hwh"
+        copy(hwh_name, deploy_hwh_name)
+        # filename for the synth utilization report
+        synth_report_filename = vivado_pynq_proj_dir + "/synth_report.xml"
+        model.set_metadata_prop("vivado_synth_rpt", synth_report_filename)
         return (model, False)
 
 
 class ZynqBuild(Transformation):
     """Best-effort attempt at building the accelerator for Zynq."""
 
-    def __init__(self, platform, period_ns):
+    def __init__(self, platform, period_ns, enable_debug=False):
         super().__init__()
         self.fpga_part = pynq_part_map[platform]
         self.period_ns = period_ns
         self.platform = platform
+        self.enable_debug = enable_debug
 
     def apply(self, model):
         # first infer layouts
         model = model.transform(InferDataLayouts())
         # prepare at global level, then break up into kernels
         prep_transforms = [
-            MakePYNQDriver(),
+            MakePYNQDriver(platform="zynq-iodma"),
             InsertIODMA(64),
             InsertDWC(),
             Floorplan(),
@@ -273,9 +298,6 @@ class ZynqBuild(Transformation):
             dataflow_model_filename = sdp_node.get_nodeattr("model")
             kernel_model = ModelWrapper(dataflow_model_filename)
             kernel_model = kernel_model.transform(InsertFIFO())
-            kernel_model = kernel_model.transform(
-                InsertTLastMarker(both=True, external=False, dynamic=False)
-            )
             kernel_model = kernel_model.transform(GiveUniqueNodeNames())
             kernel_model.save(dataflow_model_filename)
             kernel_model = kernel_model.transform(
@@ -290,4 +312,7 @@ class ZynqBuild(Transformation):
             )
             kernel_model.save(dataflow_model_filename)
         # Assemble design from IPs
-        model = model.transform(MakeZYNQProject(self.platform))
+        model = model.transform(
+            MakeZYNQProject(self.platform, enable_debug=self.enable_debug)
+        )
+        return (model, False)

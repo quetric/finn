@@ -51,6 +51,7 @@ from finn.transformation.fpgadataflow.make_pynq_driver import MakePYNQDriver
 from finn.util.basic import make_build_dir
 from finn.transformation.infer_data_layouts import InferDataLayouts
 
+
 from finn.transformation.general import (
     GiveReadableTensorNames,
     GiveUniqueNodeNames,
@@ -351,7 +352,7 @@ class VitisBuild(Transformation):
         # prepare at global level, then break up into kernels
         model.set_metadata_prop("clk_ns", str(self.period_ns))
         prep_transforms = [
-            MakePYNQDriver(),
+            MakePYNQDriver(platform="alveo"),
             InsertIODMA(512),
             InsertDWC(),
             Floorplan(floorplan_file=self.user_floorplan_file),
@@ -396,8 +397,9 @@ class VitisBuild(Transformation):
             )
             kernel_model.save(dataflow_model_filename)
         # Assemble design from kernels
-        model = model.transform(
-            VitisLink(self.platform, round(1000 / self.period_ns), self.link_options)
-        )
+
+        model = model.transform(VitisLink(self.platform, round(1000 / self.period_ns)))
+        # set platform attribute for correct remote execution
+        model.set_metadata_prop("platform", "alveo")
 
         return (model, False)

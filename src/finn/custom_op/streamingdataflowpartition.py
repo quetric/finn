@@ -39,6 +39,9 @@ class StreamingDataflowPartition(CustomOp):
         return {
             "model": ("s", True, ""),
             "slr": ("i", False, -1),
+            "res_estimate": ("s", False, ""),
+            "res_hls": ("s", False, ""),
+            "res_synth": ("s", False, ""),
         }
 
     def make_shape_compatible_op(self, model):

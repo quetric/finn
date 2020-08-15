@@ -104,7 +104,7 @@ from finn.core.datatype import DataType
 from pynq.ps import Clocks
 
 class FINNAccelDriver():
-    def __init__(self, N, bitfile, platform="zynq"):
+    def __init__(self, N, bitfile, platform="$PLATFORM$"):
         \"\"\"Instantiate the FINN accelerator driver.
         Gets batchsize (N) as integer and path to bitfile as string.\"\"\"
         self.platform = platform
@@ -141,8 +141,16 @@ class FINNAccelDriver():
         elif self.platform == "alveo":
             self.idma = self.ol.idma0
             self.odma = self.ol.odma0
+        elif self.platform == "zynq-iodma":
+            self.idma = self.ol.idma0
+            self.odma = self.ol.odma0
+            # clock frequency
+            self.fclk_mhz = $CLOCK_FREQ_MHZ$
+            # set the clock frequency as specified by user during transformations
+            if self.fclk_mhz > 0:
+                Clocks.$CLK_NAME$ = self.fclk_mhz
         else:
-            raise ValueError("Supported platforms are zynq and alveo")
+            raise ValueError("Supported platforms are zynq zynq-iodma alveo")
 
         # allocate a PYNQ buffer for the packed input and buffer
         self.ibuf_packed_device = allocate(shape=self.ishape_packed, dtype=np.uint8)
@@ -194,7 +202,20 @@ class FINNAccelDriver():
             dma.recvchannel.transfer(self.obuf_packed_device)
             dma.sendchannel.wait()
             dma.recvchannel.wait()
-        else:
+        elif self.platform == "zynq-iodma":
+            # manually launch IODMAs since signatures are missing
+            self.idma.write(0x10, self.ibuf_packed_device.device_address)
+            self.idma.write(0x1c, self.N)
+            self.odma.write(0x10, self.obuf_packed_device.device_address)
+            self.odma.write(0x1c, self.N)
+            self.idma.write(0x00, 1)
+            self.odma.write(0x00, 1)
+            # wait until output IODMA is finished
+            status = self.odma.read(0x00)
+            while status & 0x2 == 0:
+                status = self.odma.read(0x00)
+
+        elif self.platform == "alveo":
             self.ibuf_packed_device.sync_to_device()
             self.idma.start(self.ibuf_packed_device, self.N)
             self.odma.start(self.obuf_packed_device, self.N)
@@ -207,7 +228,7 @@ class FINNAccelDriver():
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Set exec mode, batchsize N, bitfile name, inputfile name and outputfile name')
     parser.add_argument('--exec_mode', help='Please select functional verification ("execute") or throughput test ("throughput_test")', default="execute")
-    parser.add_argument('--platform', help='Target platform, zynq or alveo', default="zynq")
+    parser.add_argument('--platform', help='Target platform: zynq zynq-iodma alveo', default="zynq")
     parser.add_argument('--batchsize', help='number of samples for inference', type=int, default=1)
     parser.add_argument('--bitfile', help='name of bitfile (i.e. "resizer.bit")', default="resizer.bit")
     parser.add_argument('--inputfile', help='name of input npy file (i.e. "input.npy")', default="input.npy")
@@ -289,6 +310,15 @@ set NUM_AXIMM %d
 set BOARD %s
 set FPGA_PART %s
 create_project finn_zynq_link ./ -part $FPGA_PART
+
+# set board part repo paths to find PYNQ-Z1/Z2
+set paths_prop [get_property BOARD_PART_REPO_PATHS [current_project]]
+set paths_param [get_param board.repoPaths]
+lappend paths_prop /workspace/finn/board_files
+lappend paths_param /workspace/finn/board_files
+set_property BOARD_PART_REPO_PATHS $paths_prop [current_project]
+set_param board.repoPaths $paths_param
+
 if {$BOARD == "ZCU104"} {
     set_property board_part xilinx.com:zcu104:part0:1.1 [current_project]
     set ZYNQ_TYPE "zynq_us+"
@@ -348,6 +378,18 @@ connect_bd_net [get_bd_pins axi_interconnect_0/ARESETN] [get_bd_pins smartconnec
 #custom IP instantiations/connections start here
 %s
 
+# set up debug
+if {%d == 1} {
+    set_property HDL_ATTRIBUTE.DEBUG true [get_bd_intf_nets {idma0_m_axis_0}]
+    set_property HDL_ATTRIBUTE.DEBUG true [get_bd_intf_nets {StreamingDataflowPartition_1_m_axis_0}]
+    set_property HDL_ATTRIBUTE.DEBUG true [get_bd_intf_nets {smartconnect_0_M00_AXI}]
+    apply_bd_automation -rule xilinx.com:bd_rule:debug -dict [list \
+                                                              [get_bd_intf_nets smartconnect_0_M00_AXI] {AXI_R_ADDRESS "Data and Trigger" AXI_R_DATA "Data and Trigger" AXI_W_ADDRESS "Data and Trigger" AXI_W_DATA "Data and Trigger" AXI_W_RESPONSE "Data and Trigger" CLK_SRC "/zynq_ps/FCLK_CLK0" SYSTEM_ILA "Auto" APC_EN "0" } \
+                                                              [get_bd_intf_nets idma0_m_axis_0] {AXIS_SIGNALS "Data and Trigger" CLK_SRC "/zynq_ps/FCLK_CLK0" SYSTEM_ILA "Auto" APC_EN "0" } \
+                                                              [get_bd_intf_nets StreamingDataflowPartition_1_m_axis_0] {AXIS_SIGNALS "Data and Trigger" CLK_SRC "/zynq_ps/FCLK_CLK0" SYSTEM_ILA "Auto" APC_EN "0" } \
+                                                             ]
+}
+
 #finalize clock and reset connections for interconnects
 set i 0
 while {$i < $NUM_AXILITE} {
@@ -362,8 +404,21 @@ validate_bd_design
 set_property SYNTH_CHECKPOINT_MODE "Hierarchical" [ get_files top.bd ]
 make_wrapper -files [get_files top.bd] -import -fileset sources_1 -top
 
-set_property -name {STEPS.SYNTH_DESIGN.ARGS.MORE OPTIONS} -value {-mode out_of_context} -objects [get_runs synth_1]
+set_property strategy Flow_PerfOptimized_high [get_runs synth_1]
+set_property STEPS.SYNTH_DESIGN.ARGS.DIRECTIVE AlternateRoutability [get_runs synth_1]
+set_property STEPS.SYNTH_DESIGN.ARGS.RETIMING true [get_runs synth_1]
+set_property strategy Performance_ExtraTimingOpt [get_runs impl_1]
+set_property STEPS.OPT_DESIGN.ARGS.DIRECTIVE Explore [get_runs impl_1]
+set_property STEPS.POST_ROUTE_PHYS_OPT_DESIGN.ARGS.DIRECTIVE AggressiveExplore [get_runs impl_1]
+set_property STEPS.PHYS_OPT_DESIGN.ARGS.DIRECTIVE AggressiveExplore [get_runs impl_1]
+set_property STEPS.POST_ROUTE_PHYS_OPT_DESIGN.IS_ENABLED true [get_runs impl_1]
+
+# out-of-context synth can't be used for bitstream generation
+# set_property -name {STEPS.SYNTH_DESIGN.ARGS.MORE OPTIONS} -value {-mode out_of_context} -objects [get_runs synth_1]
 launch_runs -to_step write_bitstream impl_1 -jobs %d
 wait_on_run [get_runs impl_1]
 
+# generate synthesis report
+open_run synth_1 -name synth_1
+report_utilization -hierarchical -hierarchical_depth 4 -file synth_report.xml -format xml
 """
