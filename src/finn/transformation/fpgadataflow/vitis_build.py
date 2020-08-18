@@ -28,6 +28,7 @@
 
 import os
 import subprocess
+import json
 
 from finn.core.modelwrapper import ModelWrapper
 from finn.transformation import Transformation
@@ -51,6 +52,7 @@ from finn.transformation.fpgadataflow.make_pynq_driver import MakePYNQDriver
 from finn.transformation.general import GiveReadableTensorNames, GiveUniqueNodeNames
 from finn.util.basic import make_build_dir
 from finn.transformation.infer_data_layouts import InferDataLayouts
+from finn.analysis.fpgadataflow.floorplan_params import floorplan_params
 
 
 def _check_vitis_envvars():
@@ -189,8 +191,8 @@ class VitisLink(Transformation):
             # has axis, aximm and axilite
             # everything else is axis-only
             # assume only one connection from each ip to the next
-            # all aximm allocated to DDR[0]
-            # all kernels allocated to SLR0
+            # all aximm allocated to DDR[0] unless otherwise instructed
+            # all kernels allocated to SLR0 unless otherwise instructed
             producer = model.find_producer(node.input[0])
             consumer = model.find_consumers(node.output[0])
             # define kernel instances
@@ -208,11 +210,18 @@ class VitisLink(Transformation):
                 instance_names[node.name] = node.name
                 config.append("nk=%s:1:%s" % (node.name, instance_names[node.name]))
             # assign SLRs
-            config.append("slr=%s:SLR0" % instance_names[node.name])
+            slr = sdp_node.get_nodeattr("slr")
+            if slr == -1:
+                slr = 0
+            config.append("slr=%s:SLR%d" % (instance_names[node.name], slr))
             # assign memory banks
             if producer is None or consumer is None:
+                mem_port = sdp_node.get_nodeattr("mem_port")
+                # default to DDR0 if nothing else specified
+                if mem_port == "":
+                    mem_port = "DDR[0]"
                 config.append(
-                    "sp=%s.m_axi_gmem0:DDR[%d]" % (instance_names[node.name], 0)
+                    "sp=%s.m_axi_gmem0:%s" % (instance_names[node.name], mem_port)
                 )
             # connect streams
             if producer is not None:
@@ -266,11 +275,12 @@ class VitisLink(Transformation):
 class VitisBuild(Transformation):
     """Best-effort attempt at building the accelerator with Vitis."""
 
-    def __init__(self, fpga_part, period_ns, platform):
+    def __init__(self, fpga_part, period_ns, platform, floorplan_file=None):
         super().__init__()
         self.fpga_part = fpga_part
         self.period_ns = period_ns
         self.platform = platform
+        self.floorplan_file = floorplan_file
 
     def apply(self, model):
         _check_vitis_envvars()
@@ -281,13 +291,36 @@ class VitisBuild(Transformation):
             MakePYNQDriver(platform="alveo"),
             InsertIODMA(512),
             InsertDWC(),
-            Floorplan(),
-            CreateDataflowPartition(),
         ]
         for trn in prep_transforms:
             model = model.transform(trn)
             model = model.transform(GiveUniqueNodeNames())
             model = model.transform(GiveReadableTensorNames())
+
+        # read in a user-specified floorplan or generate a default one
+        if self.floorplan_file is None:
+            floorplan = model.analysis(floorplan_params)
+            json_dir = make_build_dir(prefix="vitis_floorplan_")
+            json_file = json_dir + "/floorplan.json"
+            model.set_metadata_prop("floorplan_json", json_file)
+            with open(json_file, "w") as f:
+                json.dump(floorplan, f)
+        else:
+            model.set_metadata_prop("floorplan_json", self.floorplan_file)
+            with open(self.floorplan_file, "r") as f:
+                floorplan = json.load(f)
+
+        model = model.transform(Floorplan(floorplan=floorplan))
+
+        # save the updated floorplan
+        floorplan = model.analysis(floorplan_params)
+        with open(model.get_metadata_prop("floorplan_json"), "w") as f:
+            json.dump(floorplan, f)
+
+        model = model.transform(CreateDataflowPartition())
+        model = model.transform(GiveUniqueNodeNames())
+        model = model.transform(GiveReadableTensorNames())
+
         # Build each kernel individually
         sdp_nodes = model.get_nodes_by_op_type("StreamingDataflowPartition")
         for sdp_node in sdp_nodes:
