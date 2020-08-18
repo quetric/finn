@@ -139,6 +139,18 @@ class Vector_Vector_Activate_Batch(HLSCustomOp):
         nf = np.prod(self.get_folded_output_shape()[:-1])
         return nf
 
+    def get_exp_cycles(self):
+        pe = self.get_nodeattr("PE")
+        ch = self.get_nodeattr("Channels")
+        dim = self.get_nodeattr("Dim")
+        k = self.get_nodeattr("Kernel")
+        # currently FINN supports for vvau a batch size of 1
+        batch_size = 1
+        # since mmv != 1 is not supported yet, we set mmv for now to 1
+        mmv = 1
+        exp_cycles = ((ch * k * k) / pe) * batch_size * (dim * dim) / mmv
+        return int(exp_cycles)
+
     def get_template_param_values(self):
         """Returns the template parameter values according to input, output and weight
         data types."""
@@ -242,6 +254,9 @@ class Vector_Vector_Activate_Batch(HLSCustomOp):
             if thresholds is not None:
                 threshold_tensor = self.get_hls_compatible_threshold_tensor(thresholds)
                 tdt = DataType.INT32
+                assert np.vectorize(tdt.allowed)(
+                    threshold_tensor
+                ).all(), "Thresholds are not int"
                 thresholds_hls_code = numpy_to_hls_code(
                     threshold_tensor, tdt, "thresholds", False, True
                 )

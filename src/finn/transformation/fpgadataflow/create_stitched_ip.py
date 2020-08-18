@@ -285,17 +285,11 @@ class CreateStitchedIP(Transformation):
             if model.find_consumers(node.output[0]) is None:
                 # last node in graph
                 self.connect_m_axis_external(node)
-                # ensure it is a TLastMarker to have a valid TLast signal
-                assert (
-                    node.op_type == "TLastMarker" or node.op_type == "IODMA"
-                ), """Last node is not TLastMarker or DMA.
-                Please run transformation InsertTLastMarker/InsertIODMA to ensure
-                a valid TLast signal"""
                 if node.op_type == "TLastMarker":
                     assert (
                         node_inst.get_nodeattr("Direction") == "out"
                     ), """Output TLastMarker incorrect direction"""
-                elif node.op_type == "IODMA":
+                elif node.op_type == "IODMA" and len(model.graph.node) != 1:
                     assert (
                         node_inst.get_nodeattr("direction") == "out"
                     ), """Output DMA incorrect direction"""
