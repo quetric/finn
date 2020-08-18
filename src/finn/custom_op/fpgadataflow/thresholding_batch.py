@@ -298,6 +298,9 @@ class Thresholding_Batch(HLSCustomOp):
                 tdt = DataType.get_smallest_possible(0 - tdt_max - 1)
         else:
             tdt = DataType.get_smallest_possible(tdt_max)
+        assert np.vectorize(tdt.allowed)(
+            threshold_tensor
+        ).all(), "Thresholds can't be expressed with type %s" % str(tdt)
 
         thresholds_hls_code = numpy_to_hls_code(
             threshold_tensor, tdt, "thresholds", False, True
