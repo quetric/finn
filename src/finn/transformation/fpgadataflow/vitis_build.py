@@ -398,7 +398,13 @@ class VitisBuild(Transformation):
             kernel_model.save(dataflow_model_filename)
         # Assemble design from kernels
 
-        model = model.transform(VitisLink(self.platform, round(1000 / self.period_ns)))
+        model = model.transform(
+            VitisLink(
+                self.platform,
+                round(1000 / self.period_ns),
+                link_options=self.link_options,
+            )
+        )
         # set platform attribute for correct remote execution
         model.set_metadata_prop("platform", "alveo")
 
