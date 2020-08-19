@@ -304,7 +304,7 @@ class VitisBuild(Transformation):
             json_file = json_dir + "/floorplan.json"
             model.set_metadata_prop("floorplan_json", json_file)
             with open(json_file, "w") as f:
-                json.dump(floorplan, f)
+                json.dump(floorplan, f, indent=4)
         else:
             model.set_metadata_prop("floorplan_json", self.floorplan_file)
             with open(self.floorplan_file, "r") as f:
@@ -315,7 +315,7 @@ class VitisBuild(Transformation):
         # save the updated floorplan
         floorplan = model.analysis(floorplan_params)
         with open(model.get_metadata_prop("floorplan_json"), "w") as f:
-            json.dump(floorplan, f)
+            json.dump(floorplan, f, indent=4)
 
         model = model.transform(CreateDataflowPartition())
         model = model.transform(GiveUniqueNodeNames())
