@@ -530,10 +530,10 @@ class ChannelwiseOp_Batch(HLSCustomOp):
 
     def pragmas(self):
         self.code_gen_dict["$PRAGMAS$"] = [
-            "#pragma HLS INTERFACE axis register off  port=in0"
+            "#pragma HLS INTERFACE axis register reverse  port=in0"
         ]
         self.code_gen_dict["$PRAGMAS$"].append(
-            "#pragma HLS INTERFACE axis register off  port=out"
+            "#pragma HLS INTERFACE axis register reverse  port=out"
         )
         self.code_gen_dict["$PRAGMAS$"].append(
             "#pragma HLS INTERFACE ap_ctrl_none port=return"
