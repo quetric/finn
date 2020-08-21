@@ -681,8 +681,8 @@ class StreamingFCLayer_Batch(HLSCustomOp):
                 else:
                     tdt = DataType.get_smallest_possible(tdt_max)
 
-                # get computed threshold datatype from attribute
-                tdt = DataType[self.get_nodeattr("accDataType")]
+                # # get computed threshold datatype from attribute
+                # tdt = DataType[self.get_nodeattr("accDataType")]
 
                 assert np.vectorize(tdt.allowed)(
                     threshold_tensor
