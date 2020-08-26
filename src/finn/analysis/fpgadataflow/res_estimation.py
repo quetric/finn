@@ -79,6 +79,19 @@ def res_estimation_complete(model):
                 inst.set_nodeattr("ram_style", "ultra")
                 res_dict[node.name].append(inst.node_res_estimation())
                 inst.set_nodeattr("ram_style", orig_ramstyle)
+            elif op_type == "StreamingFIFO":
+                orig_implstyle = inst.get_nodeattr("impl_style")
+                orig_ramstyle = inst.get_nodeattr("ram_style")
+                res_dict[node.name] = []
+                inst.set_nodeattr("impl_style", "vivado")
+                inst.set_nodeattr("ram_style", "block")
+                res_dict[node.name].append(inst.node_res_estimation())
+                inst.set_nodeattr("ram_style", "distributed")
+                res_dict[node.name].append(inst.node_res_estimation())
+                inst.set_nodeattr("ram_style", "ultra")
+                res_dict[node.name].append(inst.node_res_estimation())
+                inst.set_nodeattr("impl_style", orig_implstyle)
+                inst.set_nodeattr("ram_style", orig_ramstyle)
             else:
                 res_dict[node.name] = [inst.node_res_estimation()]
 
