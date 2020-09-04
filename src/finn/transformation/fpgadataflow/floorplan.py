@@ -60,7 +60,7 @@ class Floorplan(Transformation):
                     # optimize for possible SLR crossing
                     in_width = node_inst.get_nodeattr("inWidth")
                     out_width = node_inst.get_nodeattr("outWidth")
-                    if in_width > out_width:
+                    if in_width < out_width:
                         # use consumer config (node not yet configured)
                         consumer = model.find_consumer(node.output[0])
                         if consumer.name in self.user_floorplan:
