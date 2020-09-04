@@ -30,7 +30,6 @@ import os
 import warnings
 import subprocess
 
-import numpy as np
 from finn.transformation import Transformation
 from finn.util.basic import get_by_name, make_build_dir
 from finn.custom_op.registry import getCustomOp
@@ -188,6 +187,8 @@ class CreateStitchedIP(Transformation):
 
     def apply(self, model):
         ip_dirs = ["list"]
+        # add RTL streamer IP
+        ip_dirs.append("/workspace/finn/finn-rtllib/memstream")
         # ensure that all nodes are fpgadataflow, and that IPs are generated
         for node in model.graph.node:
             assert node.domain == "finn", 'Node domain is not set to "finn"'
@@ -202,38 +203,7 @@ class CreateStitchedIP(Transformation):
             ip_dir_value = node_inst.get_nodeattr("ip_path")
             assert os.path.isdir(ip_dir_value), "IP generation directory doesn't exist."
             ip_dirs += [ip_dir_value]
-            vlnv = node_inst.get_nodeattr("ip_vlnv")
-            inst_name = node.name
-            if node.op_type == "StreamingFIFO":
-                vlnv = "xilinx.com:ip:axis_data_fifo:2.0"
-                create_cmd = "create_bd_cell -type ip -vlnv %s %s" % (vlnv, inst_name)
-                self.create_cmds += [create_cmd]
-                fifo_depth = node_inst.get_nodeattr("depth")
-                fifo_depth = 16 if fifo_depth < 16 else fifo_depth
-                fifo_depth = 2 ** np.ceil(np.log2(fifo_depth))
-                create_cmd = (
-                    "set_property -dict [list CONFIG.FIFO_DEPTH {%d}] "
-                    "[get_bd_cells %s]" % (fifo_depth, inst_name)
-                )
-                self.create_cmds += [create_cmd]
-
-                # TODO: StreamingFIFO attr to get this? decide if we keep this approach
-                # inserting fifo ip
-                fifo_mem = "auto"
-                if fifo_depth <= 64:
-                    fifo_mem = "distributed"
-                elif fifo_depth > 512:
-                    fifo_mem = "ultra"
-                # fifo_mem = "block"
-
-                create_cmd = (
-                    "set_property -dict [list CONFIG.FIFO_MEMORY_TYPE {%s}] "
-                    "[get_bd_cells %s]" % (fifo_mem, inst_name)
-                )
-                self.create_cmds += [create_cmd]
-            else:
-                create_cmd = "create_bd_cell -type ip -vlnv %s %s" % (vlnv, inst_name)
-                self.create_cmds += [create_cmd]
+            self.create_cmds += node_inst.code_generation_ipi()
             my_producer = model.find_producer(node.input[0])
             self.connect_clk_rst(node)
             self.connect_axi(node)
@@ -260,6 +230,7 @@ class CreateStitchedIP(Transformation):
                 #     find index of producer output connected to our target input
                 #     get names of hdl interfaces for input and producer output
                 #     issue a TCL directive to connect input to output
+                #     if FC layer with mode "decoupled", add a streamer on input 1
                 for i in range(len(node.input)):
                     producer = model.find_producer(node.input[i])
                     if producer is None:

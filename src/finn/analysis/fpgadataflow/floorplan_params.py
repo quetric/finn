@@ -26,31 +26,29 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-import os
-import subprocess
-
-from finn.transformation import Transformation
+from finn.util.fpgadataflow import is_fpgadataflow_node
+from finn.custom_op.registry import getCustomOp
 
 
-class SynthPYNQProject(Transformation):
-    """Run synthesis for the PYNQ project for this graph. The MakePYNQProject
-    transformation must be applied prior to this transformation."""
+def floorplan_params(model):
+    """Gathers SLR and partition IDs from nodes.
 
-    def __init__(self):
-        super().__init__()
+    Returns {node name : {slr, device id, partition id, memory port}}."""
 
-    def apply(self, model):
-        vivado_pynq_proj_dir = model.get_metadata_prop("vivado_pynq_proj")
-        if vivado_pynq_proj_dir is None or (not os.path.isdir(vivado_pynq_proj_dir)):
-            raise Exception("No synthesis project, apply MakePYNQProject first.")
-        synth_project_sh = vivado_pynq_proj_dir + "/synth_project.sh"
-        if not os.path.isfile(synth_project_sh):
-            raise Exception("No synthesis script, apply MakePYNQProject first.")
-        bash_command = ["bash", synth_project_sh]
-        process_compile = subprocess.Popen(bash_command, stdout=subprocess.PIPE)
-        process_compile.communicate()
-        # set bitfile attribute
-        model.set_metadata_prop("bitfile", vivado_pynq_proj_dir + "/resizer.bit")
-        model.set_metadata_prop("hw_handoff", vivado_pynq_proj_dir + "/resizer.hwh")
-        # TODO pull out synthesis statistics and put them in as attributes
-        return (model, False)
+    ret_dict = {
+        "default": {"slr": -1, "partition_id": 0, "device_id": 0, "mem_port": None}
+    }
+    for node in model.graph.node:
+        if is_fpgadataflow_node(node) is True:
+            node_inst = getCustomOp(node)
+            node_slr = node_inst.get_nodeattr("slr")
+            node_pid = node_inst.get_nodeattr("partition_id")
+            node_mport = node_inst.get_nodeattr("mem_port")
+            ret_dict[node.name] = {
+                "slr": node_slr,
+                "partition_id": node_pid,
+                "device_id": 0,
+                "mem_port": node_mport,
+            }
+
+    return ret_dict

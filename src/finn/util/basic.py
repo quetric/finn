@@ -66,6 +66,41 @@ alveo_default_platform["U200"] = "xilinx_u200_xdma_201830_2"
 alveo_default_platform["U250"] = "xilinx_u250_xdma_201830_2"
 alveo_default_platform["U280"] = "xilinx_u280_xdma_201920_3"
 
+# resource availability for PYNQ and Alveo boards
+platform_resource_counts = dict()
+platform_resource_counts["Pynq-Z1"] = {
+    "slr0": {"LUT": 53200, "BRAM_18K": 280, "DSP": 220, "URAM": 0}
+}
+platform_resource_counts["Pynq-Z2"] = {
+    "slr0": {"LUT": 53200, "BRAM_18K": 280, "DSP": 220, "URAM": 0}
+}
+platform_resource_counts["Ultra96"] = {
+    "slr0": {"LUT": 71000, "BRAM_18K": 412, "DSP": 360, "URAM": 0}
+}
+platform_resource_counts["ZCU104"] = {
+    "slr0": {"LUT": 230000, "BRAM_18K": 610, "DSP": 1728, "URAM": 92}
+}
+platform_resource_counts["U50"] = {
+    "slr0": {"LUT": 369000, "BRAM_18K": 1128, "DSP": 2580, "URAM": 304},
+    "slr1": {"LUT": 362000, "BRAM_18K": 1128, "DSP": 2760, "URAM": 304},
+}
+platform_resource_counts["U200"] = {
+    "slr0": {"LUT": 355000, "BRAM_18K": 1276, "DSP": 2265, "URAM": 320},
+    "slr1": {"LUT": 160000, "BRAM_18K": 652, "DSP": 1317, "URAM": 160},
+    "slr2": {"LUT": 355000, "BRAM_18K": 1276, "DSP": 2265, "URAM": 320},
+}
+platform_resource_counts["U250"] = {
+    "slr0": {"LUT": 345000, "BRAM_18K": 1000, "DSP": 2877, "URAM": 320},
+    "slr1": {"LUT": 345000, "BRAM_18K": 1000, "DSP": 2877, "URAM": 320},
+    "slr2": {"LUT": 345000, "BRAM_18K": 1000, "DSP": 2877, "URAM": 320},
+    "slr3": {"LUT": 345000, "BRAM_18K": 1000, "DSP": 2877, "URAM": 320},
+}
+platform_resource_counts["U280"] = {
+    "slr0": {"LUT": 369000, "BRAM_18K": 1014, "DSP": 2733, "URAM": 320},
+    "slr1": {"LUT": 333000, "BRAM_18K": 936, "DSP": 2877, "URAM": 320},
+    "slr2": {"LUT": 367000, "BRAM_18K": 1024, "DSP": 2880, "URAM": 320},
+}
+
 
 def get_rtlsim_trace_depth():
     """Return the trace depth for rtlsim via PyVerilator. Controllable
@@ -156,13 +191,19 @@ def make_build_dir(prefix=""):
 
 
 def get_by_name(container, name, name_field="name"):
-    """Return item from container by .name field if it exists, None otherwise"""
+    """Return item from container by .name field if it exists, None otherwise.
+    Will throw an Exception if multiple items are found, since this violates the
+    ONNX standard."""
     names = [getattr(x, name_field) for x in container]
-    try:
-        ind = names.index(name)
-        return container[ind]
-    except ValueError:
+
+    inds = [i for i, e in enumerate(names) if e == name]
+    if len(inds) > 1:
+        raise Exception("Found multiple get_by_name matches, undefined behavior")
+    elif len(inds) == 0:
         return None
+    else:
+        ind = inds[0]
+        return container[ind]
 
 
 def remove_by_name(container, name, name_field="name"):

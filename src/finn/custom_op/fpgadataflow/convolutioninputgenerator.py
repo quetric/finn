@@ -28,6 +28,7 @@
 
 import os
 
+import math
 import numpy as np
 
 from finn.core.datatype import DataType
@@ -193,6 +194,75 @@ class ConvolutionInputGenerator(HLSCustomOp):
         exp_cycles = ifm_dim * k * (ifm_ch / simd) + ofm_dim * max_cycles
 
         return int(exp_cycles)
+
+    def bram_estimation(self):
+        simd = self.get_nodeattr("SIMD")
+        ifm_ch = self.get_nodeattr("IFMChannels")
+        ifm_dim = self.get_nodeattr("IFMDim")
+        k = self.get_nodeattr("ConvKernelDim")
+        stride = self.get_nodeattr("Stride")
+        ram_style = self.get_nodeattr("ram_style")
+        if ram_style == "block" or ram_style == "auto":
+            ram_depth = ifm_dim * ifm_ch / simd
+            if ram_depth <= 512:
+                ram_width = 36
+            elif ram_depth <= 1024:
+                ram_width = 18
+            elif ram_depth <= 2048:
+                ram_width = 9
+            elif ram_depth <= 4096:
+                ram_width = 4
+            elif ram_depth <= 8192:
+                ram_width = 2
+            else:
+                ram_width = 1
+            return int(
+                (k + stride)
+                * (
+                    math.ceil(simd * self.get_input_datatype().bitwidth() / ram_width)
+                    * math.ceil(ifm_dim * ifm_ch / simd / ram_depth)
+                )
+            )
+        else:
+            return 0
+
+    def lut_estimation(self):
+        simd = self.get_nodeattr("SIMD")
+        ifm_ch = self.get_nodeattr("IFMChannels")
+        ifm_dim = self.get_nodeattr("IFMDim")
+        k = self.get_nodeattr("ConvKernelDim")
+        stride = self.get_nodeattr("Stride")
+        ram_style = self.get_nodeattr("ram_style")
+        if ram_style == "distributed":
+            ram_luts = int(
+                (k + stride)
+                * (
+                    simd
+                    * self.get_input_datatype().bitwidth()
+                    * math.ceil(ifm_dim * ifm_ch / simd / 64)
+                )
+            )
+        else:
+            ram_luts = 0
+        return 300 + ram_luts
+
+    def uram_estimation(self):
+        simd = self.get_nodeattr("SIMD")
+        ifm_ch = self.get_nodeattr("IFMChannels")
+        ifm_dim = self.get_nodeattr("IFMDim")
+        k = self.get_nodeattr("ConvKernelDim")
+        stride = self.get_nodeattr("Stride")
+        ram_style = self.get_nodeattr("ram_style")
+        if ram_style == "ultra":
+            return int(
+                (k + stride)
+                * (
+                    math.ceil(simd * self.get_input_datatype().bitwidth() / 64)
+                    * math.ceil(ifm_dim * ifm_ch / simd / 4096)
+                )
+            )
+        else:
+            return 0
 
     def execute_node(self, context, graph):
         mode = self.get_nodeattr("exec_mode")

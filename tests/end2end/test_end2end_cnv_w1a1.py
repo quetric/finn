@@ -72,13 +72,17 @@ from finn.transformation.fpgadataflow.make_pynq_driver import MakePYNQDriver
 from finn.transformation.fpgadataflow.make_pynq_proj import MakePYNQProject
 from finn.transformation.fpgadataflow.synth_pynq_proj import SynthPYNQProject
 from finn.transformation.fpgadataflow.make_deployment import DeployToPYNQ
-from finn.util.basic import pynq_part_map, alveo_part_map, alveo_default_platform
+from finn.util.basic import pynq_part_map
 from finn.util.test import get_test_model_trained, load_test_checkpoint_or_skip
 from finn.transformation.fpgadataflow.annotate_resources import AnnotateResources
 from finn.transformation.fpgadataflow.prepare_rtlsim import PrepareRTLSim
 from finn.transformation.fpgadataflow.insert_fifo import InsertFIFO
+from finn.transformation.fpgadataflow.allocate_resources import AllocateResources
 from finn.core.throughput_test import throughput_test_rtlsim
-from finn.transformation.fpgadataflow.vitis_build import VitisBuild
+from finn.analysis.fpgadataflow.exp_cycles_per_layer import exp_cycles_per_layer
+from finn.analysis.fpgadataflow.res_estimation import res_estimation
+from finn.util.basic import platform_resource_counts
+import warnings
 
 build_dir = "/tmp/" + os.environ["FINN_INST_NAME"]
 test_pynq_board = os.getenv("PYNQ_BOARD", default="Pynq-Z1")
@@ -183,47 +187,35 @@ def test_end2end_cnv_w1a1_fold_and_tlastmarker():
     model.save(build_dir + "/end2end_cnv_w1a1_folded.onnx")
 
 
-# board
-@pytest.mark.parametrize("board", ["U250"])
-# clock period
-@pytest.mark.parametrize("period_ns", [5])
-@pytest.mark.slow
-@pytest.mark.vivado
-def test_end2end_cnv_w1a1_vitis(board, period_ns):
-    platform = alveo_default_platform[board]
-    fpga_part = alveo_part_map[board]
+# desired frames per second
+@pytest.mark.parametrize("target_fps", [30, 10 ** 3, 10 ** 5])
+def test_end2end_cnv_w1a1_resalloc(target_fps):
     model = load_test_checkpoint_or_skip(
         build_dir + "/end2end_cnv_w1a1_dataflow_model.onnx"
     )
-    fc_layers = model.get_nodes_by_op_type("StreamingFCLayer_Batch")
-    # each tuple is (PE, SIMD, in_fifo_depth) for a layer
-    folding = [
-        (16, 3, 256),
-        (32, 32, 256),
-        (16, 32, 256),
-        (16, 32, 256),
-        (4, 32, 214),
-        (1, 32, 2),
-        (1, 4, 126),
-        (1, 8, 62),
-        (5, 1, 6),
-    ]
-    for fcl, (pe, simd, ififodepth) in zip(fc_layers, folding):
-        fcl_inst = getCustomOp(fcl)
-        fcl_inst.set_nodeattr("PE", pe)
-        fcl_inst.set_nodeattr("SIMD", simd)
-        fcl_inst.set_nodeattr("inFIFODepth", ififodepth)
-
-    swg_layers = model.get_nodes_by_op_type("ConvolutionInputGenerator")
-    swg_idepth = [2, 51, 9, 106, 2, 2]
-    for i in range(len(swg_layers)):
-        swg_inst = getCustomOp(swg_layers[i])
-        simd = folding[i][1]
-        swg_inst.set_nodeattr("SIMD", simd)
-        swg_inst.set_nodeattr("inFIFODepth", swg_idepth[i])
-
-    model = model.transform(VitisBuild(fpga_part, period_ns, platform))
-    model.save(build_dir + "/end2end_cnv_w1a1_vitis_dataflow_vitis.onnx")
+    model = model.transform(GiveUniqueNodeNames())
+    model = model.transform(
+        AllocateResources(target_fps, target_clk_ns, test_pynq_board)
+    )
+    exp_cycles_dict = model.analysis(exp_cycles_per_layer)
+    achieved_cycles_per_frame = max(exp_cycles_dict.values())
+    achieved_fps = int(10 ** 9 / (target_clk_ns * achieved_cycles_per_frame))
+    assert (
+        0.5 * min(3472, target_fps) <= achieved_fps <= 2 * min(3472, target_fps)
+    ), "Achieved FPS out of expected range"
+    resource_usage = model.analysis(res_estimation)
+    luts = sum([r["LUT"] for r in resource_usage.values()])
+    brams = sum([r["BRAM_18K"] for r in resource_usage.values()])
+    max_luts = sum(
+        [r["LUT"] for r in platform_resource_counts[test_pynq_board].values()]
+    )
+    max_brams = sum(
+        [r["BRAM_18K"] for r in platform_resource_counts[test_pynq_board].values()]
+    )
+    assert (
+        luts < max_luts and brams < max_brams
+    ), "Resource utilization too high for platform"
+    model.save(build_dir + "/end2end_cnv_w1a1_autofolded.onnx")
 
 
 @pytest.mark.slow
@@ -361,6 +353,10 @@ def test_end2end_cnv_w1a1_synth_pynq_project():
     )
     model = model.transform(SynthPYNQProject())
     model = model.transform(AnnotateResources("synth"))
+    warnings.warn(
+        "Post-synthesis resources (excluding shell): "
+        + model.get_metadata_prop("res_total_synth")
+    )
     model.save(build_dir + "/end2end_cnv_w1a1_synth.onnx")
 
 

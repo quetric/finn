@@ -26,31 +26,35 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-import os
-import subprocess
-
-from finn.transformation import Transformation
+from finn.custom_op.registry import getCustomOp
+from finn.transformation import NodeLocalTransformation
 
 
-class SynthPYNQProject(Transformation):
-    """Run synthesis for the PYNQ project for this graph. The MakePYNQProject
-    transformation must be applied prior to this transformation."""
+class SetMemMode(NodeLocalTransformation):
+    """Set attribute mem_mode in all FC layer nodes to specify which
+    kind of weight storage to use, based on memory depth. Use simple rules:
+    -memories below a min_threshold are set to const and ram_style distributed
+    -memories above a max_threshold are set to external
+    -everything else is set to decoupled and ram_style block"""
 
-    def __init__(self):
+    def __init__(self, min_threshold=128, max_threshold=None):
         super().__init__()
+        self.min_threshold = min_threshold
+        self.max_threshold = max_threshold
 
-    def apply(self, model):
-        vivado_pynq_proj_dir = model.get_metadata_prop("vivado_pynq_proj")
-        if vivado_pynq_proj_dir is None or (not os.path.isdir(vivado_pynq_proj_dir)):
-            raise Exception("No synthesis project, apply MakePYNQProject first.")
-        synth_project_sh = vivado_pynq_proj_dir + "/synth_project.sh"
-        if not os.path.isfile(synth_project_sh):
-            raise Exception("No synthesis script, apply MakePYNQProject first.")
-        bash_command = ["bash", synth_project_sh]
-        process_compile = subprocess.Popen(bash_command, stdout=subprocess.PIPE)
-        process_compile.communicate()
-        # set bitfile attribute
-        model.set_metadata_prop("bitfile", vivado_pynq_proj_dir + "/resizer.bit")
-        model.set_metadata_prop("hw_handoff", vivado_pynq_proj_dir + "/resizer.hwh")
-        # TODO pull out synthesis statistics and put them in as attributes
-        return (model, False)
+    def applyNodeLocal(self, node):
+        op_type = node.op_type
+        if op_type == "StreamingFCLayer_Batch":
+            node_inst = getCustomOp(node)
+            wmem = node_inst.calc_wmem()
+            if wmem <= self.min_threshold:
+                node_inst.set_nodeattr("mem_mode", "const")
+            else:
+                node_inst.set_nodeattr("mem_mode", "decoupled")
+                node_inst.set_nodeattr("ram_style", "block")
+            # set to external if upper threshold exists
+            if self.max_threshold is not None:
+                if wmem > self.max_threshold:
+                    node_inst.set_nodeattr("mem_mode", "external")
+
+        return (node, False)

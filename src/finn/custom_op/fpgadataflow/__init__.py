@@ -92,6 +92,7 @@ class HLSCustomOp(CustomOp):
             # partitioning info
             "partition_id": ("i", False, 0),
             "slr": ("i", False, -1),
+            "mem_port": ("s", False, ""),
             # input and output FIFO depths
             "inFIFODepth": ("i", False, 2),
             "outFIFODepth": ("i", False, 2),
@@ -194,6 +195,8 @@ class HLSCustomOp(CustomOp):
         ret["BRAM_18K"] = self.bram_estimation()
         ret["BRAM_efficiency"] = self.bram_efficiency_estimation()
         ret["LUT"] = self.lut_estimation()
+        ret["URAM"] = self.uram_estimation()
+        ret["DSP"] = self.dsp_estimation()
         return ret
 
     def bram_efficiency_estimation(self):
@@ -206,8 +209,18 @@ class HLSCustomOp(CustomOp):
         HLSCustomOp class but has to be filled by every node"""
         return 0
 
+    def uram_estimation(self):
+        """Function for UltraRAM resource estimation, is member function of
+        HLSCustomOp class but has to be filled by every node"""
+        return 0
+
     def lut_estimation(self):
         """Function for LUT resource estimation, is member function of
+        HLSCustomOp class but has to be filled by every node"""
+        return 0
+
+    def dsp_estimation(self):
+        """Function for DSP resource estimation, is member function of
         HLSCustomOp class but has to be filled by every node"""
         return 0
 
@@ -308,6 +321,12 @@ class HLSCustomOp(CustomOp):
         f.write(template)
         f.close()
         self.code_gen_dict.clear()
+
+    def code_generation_ipi(self):
+        """Constructs and returns the TCL for node instantiation in Vivado IPI."""
+        vlnv = self.get_nodeattr("ip_vlnv")
+        cmd = ["create_bd_cell -type ip -vlnv %s %s" % (vlnv, self.onnx_node.name)]
+        return cmd
 
     def compile_singlenode_code(self):
         """Builds the bash script for compilation using the CppBuilder from

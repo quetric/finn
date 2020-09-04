@@ -445,10 +445,10 @@ class ConvDoublePacked_Batch(HLSCustomOp):
 
     def pragmas(self):
         self.code_gen_dict["$PRAGMAS$"] = [
-            "#pragma HLS INTERFACE axis register reverse port=in0"
+            "#pragma HLS INTERFACE axis register both port=in0"
         ]
         self.code_gen_dict["$PRAGMAS$"] += [
-            "#pragma HLS INTERFACE axis register reverse port=out"
+            "#pragma HLS INTERFACE axis register both port=out"
         ]
         self.code_gen_dict["$PRAGMAS$"] += [
             "#pragma HLS INTERFACE ap_ctrl_none port=return"

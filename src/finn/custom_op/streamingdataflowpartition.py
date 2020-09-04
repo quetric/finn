@@ -38,10 +38,12 @@ class StreamingDataflowPartition(CustomOp):
     def get_nodeattr_types(self):
         return {
             "model": ("s", True, ""),
-            "slr": ("i", False, -1),
             "res_estimate": ("s", False, ""),
             "res_hls": ("s", False, ""),
             "res_synth": ("s", False, ""),
+            "slr": ("i", False, -1),
+            "partition_id": ("i", False, 0),
+            "mem_port": ("s", False, ""),
         }
 
     def make_shape_compatible_op(self, model):

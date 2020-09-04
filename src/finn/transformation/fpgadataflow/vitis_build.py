@@ -28,6 +28,7 @@
 
 import os
 import subprocess
+import json
 
 from finn.core.modelwrapper import ModelWrapper
 from finn.transformation import Transformation
@@ -50,6 +51,9 @@ from finn.transformation.fpgadataflow.floorplan import Floorplan
 from finn.transformation.fpgadataflow.make_pynq_driver import MakePYNQDriver
 from finn.util.basic import make_build_dir
 from finn.transformation.infer_data_layouts import InferDataLayouts
+from finn.analysis.fpgadataflow.floorplan_params import floorplan_params
+from . import templates
+from enum import Enum
 
 
 from finn.transformation.general import (
@@ -57,7 +61,6 @@ from finn.transformation.general import (
     GiveUniqueNodeNames,
     RemoveUnusedTensors,
 )
-from finn.util.basic import alveo_default_platform
 
 
 def _check_vitis_envvars():
@@ -68,6 +71,17 @@ def _check_vitis_envvars():
     assert (
         "XILINX_XRT" in os.environ
     ), "XILINX_XRT must be set for Vitis, ensure the XRT env is sourced"
+
+
+class VitisOptStrategy(Enum):
+    "Values applicable to VitisBuild optimization strategy."
+
+    DEFAULT = "0"
+    POWER = "1"
+    PERFORMANCE = "2"
+    PERFORMANCE_BEST = "3"
+    SIZE = "s"
+    BUILD_SPEED = "quick"
 
 
 class CreateVitisXO(Transformation):
@@ -168,15 +182,15 @@ class CreateVitisXO(Transformation):
 class VitisLink(Transformation):
     """Create an XCLBIN with Vitis.
 
-    Outcome if successful: sets the vitis_xclbin attribute in the ONNX
+    Outcome if successful: sets the bitfile attribute in the ONNX
     ModelProto's metadata_props field with the XCLBIN full path as value.
     """
 
-    def __init__(self, platform, f_mhz=200, link_options=""):
+    def __init__(self, platform, f_mhz=200, strategy=VitisOptStrategy.PERFORMANCE):
         super().__init__()
         self.platform = platform
         self.f_mhz = f_mhz
-        self.link_options = link_options
+        self.strategy = strategy
 
     def apply(self, model):
         _check_vitis_envvars()
@@ -198,8 +212,8 @@ class VitisLink(Transformation):
             # has axis, aximm and axilite
             # everything else is axis-only
             # assume only one connection from each ip to the next
-            # all aximm allocated to DDR[0]
-            # all kernels allocated to SLR0
+            # all aximm allocated to DDR[0] unless otherwise instructed
+            # all kernels allocated to SLR0 unless otherwise instructed
             producer = model.find_producer(node.input[0])
             consumer = model.find_consumers(node.output[0])
             # define kernel instances
@@ -219,9 +233,9 @@ class VitisLink(Transformation):
             # assign SLRs
 
             slr = sdp_node.get_nodeattr("slr")
-            if slr >= 0:
-                config.append("slr=%s:SLR%d" % (instance_names[node.name], slr))
-
+            if slr == -1:
+                slr = 0
+            config.append("slr=%s:SLR%d" % (instance_names[node.name], slr))
             # assign memory banks
             # TODO test code:
             # if producer is None or consumer is None:
@@ -237,20 +251,13 @@ class VitisLink(Transformation):
             #     )
 
             if producer is None or consumer is None:
-                if self.platform == alveo_default_platform["U280"]:
-                    config.append(
-                        "sp=%s.m_axi_gmem0:HBM[0:31]" % (instance_names[node.name])
-                    )
-                else:
-                    config.append(
-                        "sp=%s.m_axi_gmem0:DDR[%d]" % (instance_names[node.name], 0)
-                    )
-
-                # config.append(
-                #     "sp=%s.m_axi_gmem0:HBM[0:31]"
-                #     % (instance_names[node.name])
-                # )
-
+                mem_port = sdp_node.get_nodeattr("mem_port")
+                # default to DDR0 if nothing else specified
+                if mem_port == "":
+                    mem_port = "DDR[0]"
+                config.append(
+                    "sp=%s.m_axi_gmem0:%s" % (instance_names[node.name], mem_port)
+                )
             # connect streams
             if producer is not None:
                 for i in range(len(node.input)):
@@ -275,6 +282,12 @@ class VitisLink(Transformation):
         with open(link_dir + "/config.txt", "w") as f:
             f.write(config)
 
+        # create tcl script to generate resource report in XML format
+        gen_rep_xml = templates.vitis_gen_xml_report_tcl_template
+        gen_rep_xml = gen_rep_xml.replace("$VITIS_PROJ_PATH$", link_dir)
+        with open(link_dir + "/gen_report_xml.tcl", "w") as f:
+            f.write(gen_rep_xml)
+
         # create a shell script and call Vitis
         script = link_dir + "/run_vitis_link.sh"
         working_dir = os.environ["PWD"]
@@ -283,10 +296,14 @@ class VitisLink(Transformation):
             f.write("cd {}\n".format(link_dir))
             f.write(
                 "v++ -t hw --platform %s --link %s"
-                " --kernel_frequency %d --config config.txt"
-                % (self.platform, " ".join(object_files), self.f_mhz)
-                + self.link_options
-                + "\n"
+                " --kernel_frequency %d --config config.txt --optimize %s"
+                " --save-temps -R2\n"
+                % (
+                    self.platform,
+                    " ".join(object_files),
+                    self.f_mhz,
+                    self.strategy.value,
+                )
             )
             f.write("cd {}\n".format(working_dir))
         bash_command = ["bash", script]
@@ -297,8 +314,24 @@ class VitisLink(Transformation):
         assert os.path.isfile(xclbin), (
             "Vitis .xclbin file not created, check logs under %s" % link_dir
         )
+        model.set_metadata_prop("bitfile", xclbin)
 
-        model.set_metadata_prop("vitis_xclbin", xclbin)
+        # run Vivado to gen xml report
+        gen_rep_xml_sh = link_dir + "/gen_report_xml.sh"
+        working_dir = os.environ["PWD"]
+        with open(gen_rep_xml_sh, "w") as f:
+            f.write("#!/bin/bash \n")
+            f.write("cd {}\n".format(link_dir))
+            f.write(
+                "vivado -mode tcl -source %s\n" % (link_dir + "/gen_report_xml.tcl")
+            )
+            f.write("cd {}\n".format(working_dir))
+        bash_command = ["bash", gen_rep_xml_sh]
+        process_genxml = subprocess.Popen(bash_command, stdout=subprocess.PIPE)
+        process_genxml.communicate()
+        # filename for the synth utilization report
+        synth_report_filename = link_dir + "/synth_report.xml"
+        model.set_metadata_prop("vivado_synth_rpt", synth_report_filename)
         return (model, False)
 
 
@@ -336,14 +369,19 @@ class VitisBuild(Transformation):
     """Best-effort attempt at building the accelerator with Vitis."""
 
     def __init__(
-        self, fpga_part, period_ns, platform, link_options="", floorplan_file=None
+        self,
+        fpga_part,
+        period_ns,
+        platform,
+        strategy=VitisOptStrategy.PERFORMANCE,
+        floorplan_file=None,
     ):
         super().__init__()
         self.fpga_part = fpga_part
         self.period_ns = period_ns
         self.platform = platform
-        self.link_options = link_options
-        self.user_floorplan_file = floorplan_file
+        self.floorplan_file = floorplan_file
+        self.strategy = strategy
 
     def apply(self, model):
         _check_vitis_envvars()
@@ -355,13 +393,36 @@ class VitisBuild(Transformation):
             MakePYNQDriver(platform="alveo"),
             InsertIODMA(512),
             InsertDWC(),
-            Floorplan(floorplan_file=self.user_floorplan_file),
-            CreateDataflowPartition(),
         ]
         for trn in prep_transforms:
             model = model.transform(trn)
             model = model.transform(GiveUniqueNodeNames())
             model = model.transform(GiveReadableTensorNames())
+
+        # read in a user-specified floorplan or generate a default one
+        if self.floorplan_file is None:
+            floorplan = model.analysis(floorplan_params)
+            json_dir = make_build_dir(prefix="vitis_floorplan_")
+            json_file = json_dir + "/floorplan.json"
+            model.set_metadata_prop("floorplan_json", json_file)
+            with open(json_file, "w") as f:
+                json.dump(floorplan, f, indent=4)
+        else:
+            model.set_metadata_prop("floorplan_json", self.floorplan_file)
+            with open(self.floorplan_file, "r") as f:
+                floorplan = json.load(f)
+
+        model = model.transform(Floorplan(floorplan=floorplan))
+
+        # save the updated floorplan
+        floorplan = model.analysis(floorplan_params)
+        with open(model.get_metadata_prop("floorplan_json"), "w") as f:
+            json.dump(floorplan, f, indent=4)
+
+        model = model.transform(CreateDataflowPartition())
+        model = model.transform(GiveUniqueNodeNames())
+        model = model.transform(GiveReadableTensorNames())
+
         # Build each kernel individually
         sdp_nodes = model.get_nodes_by_op_type("StreamingDataflowPartition")
         for sdp_node in sdp_nodes:
@@ -395,14 +456,12 @@ class VitisBuild(Transformation):
             kernel_model = kernel_model.transform(
                 CreateVitisXO(sdp_node.onnx_node.name)
             )
+            kernel_model.set_metadata_prop("platform", "alveo")
             kernel_model.save(dataflow_model_filename)
         # Assemble design from kernels
-
         model = model.transform(
             VitisLink(
-                self.platform,
-                round(1000 / self.period_ns),
-                link_options=self.link_options,
+                self.platform, round(1000 / self.period_ns), strategy=self.strategy
             )
         )
         # set platform attribute for correct remote execution

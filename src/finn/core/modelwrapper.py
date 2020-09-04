@@ -36,6 +36,11 @@ from onnx import TensorProto
 import finn.util.basic as util
 import finn.util.onnx as onnxutil
 from finn.core.datatype import DataType
+from finn.transformation.general import (
+    RemoveUnusedTensors,
+    RemoveStaticGraphInputs,
+    SortGraph,
+)
 
 
 class ModelWrapper:
@@ -83,11 +88,11 @@ class ModelWrapper:
         """Saves the wrapper ONNX ModelProto into a file with given name."""
         onnx.save(self._model_proto, filename)
 
-    def analysis(self, analysis_fxn):
+    def analysis(self, analysis_fxn, *args, **kwargs):
         """Runs given anaylsis_fxn on this model and return resulting dict."""
-        return analysis_fxn(self)
+        return analysis_fxn(self, *args, **kwargs)
 
-    def transform(self, transformation, make_deepcopy=True):
+    def transform(self, transformation, make_deepcopy=True, cleanup=True):
         """Applies given Transformation repeatedly until no more changes can be made
         and returns a transformed ModelWrapper instance.
 
@@ -100,6 +105,22 @@ class ModelWrapper:
         while model_was_changed:
             (transformed_model, model_was_changed) = transformation.apply(
                 transformed_model
+            )
+        if cleanup:
+            transformed_model.cleanup()
+        return transformed_model
+
+    def cleanup(self):
+        "Run cleanup transformations on the model."
+        transformed_model = self
+        cleanup_transforms = [
+            RemoveUnusedTensors(),
+            RemoveStaticGraphInputs(),
+            SortGraph(),
+        ]
+        for trn in cleanup_transforms:
+            transformed_model = transformed_model.transform(
+                trn, cleanup=False, make_deepcopy=False
             )
         return transformed_model
 
