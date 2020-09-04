@@ -58,6 +58,7 @@ from finn.custom_op.fpgadataflow.vector_vector_activate_batch import (
 from finn.custom_op.fpgadataflow.channelwise_op_batch import ChannelwiseOp_Batch
 from finn.custom_op.fpgadataflow.iodma import IODMA
 from finn.custom_op.debugmarker import DebugMarker
+from finn.custom_op.fpgadataflow.Conv_double_packed import ConvDoublePacked_Batch
 
 # create a mapping of all known CustomOp names and classes
 custom_op = {}
@@ -86,7 +87,7 @@ custom_op["Vector_Vector_Activate_Batch"] = Vector_Vector_Activate_Batch
 custom_op["ChannelwiseOp_Batch"] = ChannelwiseOp_Batch
 custom_op["IODMA"] = IODMA
 custom_op["DebugMarker"] = DebugMarker
-
+custom_op["ConvDoublePacked_Batch"] = ConvDoublePacked_Batch
 
 def getCustomOp(node):
     "Return a FINN CustomOp instance for the given ONNX node, if it exists."
