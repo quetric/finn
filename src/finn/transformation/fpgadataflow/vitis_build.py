@@ -43,9 +43,6 @@ from finn.transformation.fpgadataflow.insert_tlastmarker import InsertTLastMarke
 from finn.transformation.fpgadataflow.insert_iodma import InsertIODMA
 from finn.transformation.fpgadataflow.prepare_ip import PrepareIP
 from finn.transformation.fpgadataflow.hlssynth_ip import HLSSynthIP
-from finn.transformation.fpgadataflow.replace_verilog_relpaths import (
-    ReplaceVerilogRelPaths,
-)
 from finn.transformation.fpgadataflow.create_stitched_ip import CreateStitchedIP
 from finn.transformation.fpgadataflow.floorplan import Floorplan
 from finn.transformation.fpgadataflow.make_pynq_driver import MakePYNQDriver
@@ -179,11 +176,15 @@ class VitisLink(Transformation):
     ModelProto's metadata_props field with the XCLBIN full path as value.
     """
 
-    def __init__(self, platform, f_mhz=200, strategy=VitisOptStrategy.PERFORMANCE):
+    def __init__(
+        self, platform, f_mhz=200, strategy=VitisOptStrategy.PERFORMANCE,
+        enable_debug=False
+    ):
         super().__init__()
         self.platform = platform
         self.f_mhz = f_mhz
         self.strategy = strategy
+        self.enable_debug = enable_debug
 
     def apply(self, model):
         _check_vitis_envvars()
@@ -267,6 +268,11 @@ class VitisLink(Transformation):
         with open(link_dir + "/gen_report_xml.tcl", "w") as f:
             f.write(gen_rep_xml)
 
+        debug_commands = []
+        if self.enable_debug:
+            for inst in list(instance_names.values()):
+                debug_commands.append("--dk chipscope:%s" % inst)
+
         # create a shell script and call Vitis
         script = link_dir + "/run_vitis_link.sh"
         working_dir = os.environ["PWD"]
@@ -276,12 +282,13 @@ class VitisLink(Transformation):
             f.write(
                 "v++ -t hw --platform %s --link %s"
                 " --kernel_frequency %d --config config.txt --optimize %s"
-                " --save-temps -R2\n"
+                " --save-temps -R2 %s\n"
                 % (
                     self.platform,
                     " ".join(object_files),
                     self.f_mhz,
                     self.strategy.value,
+                    debug_commands,
                 )
             )
             f.write("cd {}\n".format(working_dir))
@@ -318,8 +325,10 @@ class VitisBuild(Transformation):
     """Best-effort attempt at building the accelerator with Vitis."""
 
     def __init__(
-        self, fpga_part, period_ns, platform, strategy=VitisOptStrategy.PERFORMANCE,
+        self, fpga_part, period_ns, platform,
+        strategy=VitisOptStrategy.PERFORMANCE,
         floorplan_file=None
+        enable_debug=False
     ):
         super().__init__()
         self.fpga_part = fpga_part
@@ -327,6 +336,7 @@ class VitisBuild(Transformation):
         self.platform = platform
         self.floorplan_file = floorplan_file
         self.strategy = strategy
+        self.enable_debug = enable_debug
 
     def apply(self, model):
         _check_vitis_envvars()
@@ -383,7 +393,6 @@ class VitisBuild(Transformation):
                 PrepareIP(self.fpga_part, self.period_ns)
             )
             kernel_model = kernel_model.transform(HLSSynthIP())
-            kernel_model = kernel_model.transform(ReplaceVerilogRelPaths())
             kernel_model = kernel_model.transform(
                 CreateStitchedIP(
                     self.fpga_part, self.period_ns, sdp_node.onnx_node.name, True
@@ -397,7 +406,8 @@ class VitisBuild(Transformation):
         # Assemble design from kernels
         model = model.transform(
             VitisLink(
-                self.platform, round(1000 / self.period_ns), strategy=self.strategy
+                self.platform, round(1000 / self.period_ns), strategy=self.strategy,
+                enable_debug=self.enable_debug
             )
         )
         # set platform attribute for correct remote execution
