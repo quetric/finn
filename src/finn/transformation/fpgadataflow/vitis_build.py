@@ -46,7 +46,11 @@ from finn.transformation.fpgadataflow.hlssynth_ip import HLSSynthIP
 from finn.transformation.fpgadataflow.create_stitched_ip import CreateStitchedIP
 from finn.transformation.fpgadataflow.floorplan import Floorplan
 from finn.transformation.fpgadataflow.make_pynq_driver import MakePYNQDriver
-from finn.transformation.general import GiveReadableTensorNames, GiveUniqueNodeNames
+from finn.transformation.general import (
+    GiveReadableTensorNames,
+    GiveUniqueNodeNames,
+    RemoveUnusedTensors,
+)
 from finn.util.basic import make_build_dir
 from finn.transformation.infer_data_layouts import InferDataLayouts
 from finn.analysis.fpgadataflow.floorplan_params import floorplan_params
@@ -321,6 +325,36 @@ class VitisLink(Transformation):
         return (model, False)
 
 
+class ExposeExternalParams(Transformation):
+    """
+    Removes inputs externally supplied from graph.value_info and
+    inserts it in graph.input as required to properly transform the model
+    from Vitis build
+    """
+
+    def apply(self, model):
+        supported_op_types = ["StreamingFCLayer_Batch"]
+        for vi in model.graph.value_info:
+            consumers = model.find_consumers(vi.name)
+
+            if (
+                consumers is not None
+                and len(consumers) == 1
+                and consumers[0].op_type in supported_op_types
+            ):
+                node = consumers[0]
+                custom_op = getCustomOp(node)
+                inp_idx = list(node.input).index(vi.name)
+                if inp_idx != 1:
+                    continue
+                if custom_op.get_nodeattr("mem_mode") == "external":
+                    model.graph.input.append(vi)
+                    model.graph.value_info.remove(vi)
+
+        # one iteration is enough
+        return model, False
+
+
 class VitisBuild(Transformation):
     """Best-effort attempt at building the accelerator with Vitis."""
 
@@ -384,6 +418,9 @@ class VitisBuild(Transformation):
             dataflow_model_filename = sdp_node.get_nodeattr("model")
             kernel_model = ModelWrapper(dataflow_model_filename)
             kernel_model = kernel_model.transform(InsertFIFO())
+            kernel_model = kernel_model.transform(RemoveUnusedTensors())
+            kernel_model = kernel_model.transform(ExposeExternalParams())
+            
             kernel_model = kernel_model.transform(
                 InsertTLastMarker(both=True, external=False, dynamic=False)
             )
