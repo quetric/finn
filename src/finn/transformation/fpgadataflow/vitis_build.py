@@ -315,8 +315,7 @@ class VitisBuild(Transformation):
     """Best-effort attempt at building the accelerator with Vitis."""
 
     def __init__(
-        self, fpga_part, period_ns, platform, strategy=VitisOptStrategy.PERFORMANCE,
-        floorplan_file=None
+        self, fpga_part, period_ns, platform, floorplan_file=None, strategy=VitisOptStrategy.PERFORMANCE
     ):
         super().__init__()
         self.fpga_part = fpga_part
