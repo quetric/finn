@@ -813,8 +813,9 @@ class StreamingFCLayer_Batch(HLSCustomOp):
                 wei = npy_to_rtlsim_input(
                     "{}/weights.npy".format(code_gen_dir), export_wdt, wnbits
                 )
+                num_w_reps = np.prod(self.get_nodeattr("numInputVectors"))
                 io_dict = {
-                    "inputs": {"in0": inp, "weights": wei},
+                    "inputs": {"in0": inp, "weights": wei * num_w_reps},
                     "outputs": {"out": []},
                 }
                 self.rtlsim_multi_io(sim, io_dict)
@@ -1200,6 +1201,11 @@ class StreamingFCLayer_Batch(HLSCustomOp):
                 % (node_name, dout_name, node_name, node_name, dout_name)
             )
             cmd.append("save_bd_design")
+        elif mem_mode == "const":
+            # base class impl sufficient for const mode
+            return super().code_generation_ipi()
+        else:
+            raise Exception("Unrecognized mem_mode for StreamingFCLayer")
         return cmd
 
     def get_verilog_top_module_intf_names(self):
