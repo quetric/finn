@@ -26,49 +26,54 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-import os
-import pkg_resources as pk
-import pytest
+from pkgutil import get_data
 
+import os
 import brevitas.onnx as bo
 import numpy as np
+import onnx
+import onnx.numpy_helper as nph
 import torch
 
 import finn.core.onnx_exec as oxe
 from finn.core.modelwrapper import ModelWrapper
 from finn.transformation.fold_constants import FoldConstants
+from finn.transformation.general import RemoveStaticGraphInputs
 from finn.transformation.infer_shapes import InferShapes
-from finn.transformation.general import GiveUniqueNodeNames, RemoveStaticGraphInputs
 from finn.util.test import get_test_model_trained
 
-export_onnx_path = "test_brevitas_cnv.onnx"
 
-
-@pytest.mark.parametrize("abits", [1, 2])
-@pytest.mark.parametrize("wbits", [1, 2])
-def test_brevitas_cnv_export_exec(wbits, abits):
-    if wbits > abits:
-        pytest.skip("No wbits > abits cases at the moment")
-    cnv = get_test_model_trained("CNV", wbits, abits)
-    bo.export_finn_onnx(cnv, (1, 3, 32, 32), export_onnx_path)
-    model = ModelWrapper(export_onnx_path)
-    model = model.transform(GiveUniqueNodeNames())
+def test_brevitas_debug():
+    finn_onnx = "test_brevitas_debug.onnx"
+    fc = get_test_model_trained("TFC", 2, 2)
+    dbg_hook = bo.enable_debug(fc)
+    bo.export_finn_onnx(fc, (1, 1, 28, 28), finn_onnx)
+    model = ModelWrapper(finn_onnx)
     model = model.transform(InferShapes())
     model = model.transform(FoldConstants())
     model = model.transform(RemoveStaticGraphInputs())
     assert len(model.graph.input) == 1
     assert len(model.graph.output) == 1
-    fn = pk.resource_filename("finn", "data/cifar10/cifar10-test-data-class3.npz")
-    input_tensor = np.load(fn)["arr_0"].astype(np.float32)
-    input_tensor = input_tensor / 255
-    assert input_tensor.shape == (1, 3, 32, 32)
+    # load one of the test vectors
+    raw_i = get_data("finn", "data/onnx/mnist-conv/test_data_set_0/input_0.pb")
+    input_tensor = onnx.load_tensor_from_string(raw_i)
     # run using FINN-based execution
-    input_dict = {model.graph.input[0].name: input_tensor}
-    output_dict = oxe.execute_onnx(model, input_dict, True)
+    input_dict = {"0": nph.to_array(input_tensor)}
+    output_dict = oxe.execute_onnx(model, input_dict, return_full_exec_context=True)
     produced = output_dict[model.graph.output[0].name]
+    # run using PyTorch/Brevitas
+    input_tensor = torch.from_numpy(nph.to_array(input_tensor)).float()
+    assert input_tensor.shape == (1, 1, 28, 28)
     # do forward pass in PyTorch/Brevitas
-    input_tensor = torch.from_numpy(input_tensor).float()
-    expected = cnv.forward(input_tensor).detach().numpy()
+    expected = fc.forward(input_tensor).detach().numpy()
     assert np.isclose(produced, expected, atol=1e-3).all()
-    assert np.argmax(produced) == 3
-    os.remove(export_onnx_path)
+    # check all tensors at debug markers
+    names_brevitas = set(dbg_hook.values.keys())
+    names_finn = set(output_dict.keys())
+    names_common = names_brevitas.intersection(names_finn)
+    assert len(names_common) == 16
+    for dbg_name in names_common:
+        tensor_pytorch = dbg_hook.values[dbg_name].detach().numpy()
+        tensor_finn = output_dict[dbg_name]
+        assert np.isclose(tensor_finn, tensor_pytorch, atol=1e-5).all()
+    os.remove(finn_onnx)

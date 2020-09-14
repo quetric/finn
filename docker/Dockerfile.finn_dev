@@ -46,6 +46,12 @@ RUN apt-get install -y verilator nano zsh rsync
 RUN apt-get -y install sshpass wget unzip
 RUN echo "StrictHostKeyChecking no" >> /etc/ssh/ssh_config
 
+# install XRT dependencies
+RUN wget https://raw.githubusercontent.com/Xilinx/XRT/master/src/runtime_src/tools/scripts/xrtdeps.sh
+RUN apt-get update
+RUN bash xrtdeps.sh
+RUN rm xrtdeps.sh
+
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 RUN rm requirements.txt
@@ -77,8 +83,6 @@ RUN git clone https://github.com/rogersce/cnpy.git /workspace/cnpy
 RUN git clone https://github.com/Xilinx/finn-hlslib.git /workspace/finn-hlslib
 # PyVerilator
 RUN git clone https://github.com/maltanar/pyverilator /workspace/pyverilator
-# PYNQ-HelloWorld
-RUN git clone https://github.com/maltanar/PYNQ-HelloWorld.git /workspace/PYNQ-HelloWorld
 # oh-my-xilinx
 RUN git clone https://bitbucket.org/maltanar/oh-my-xilinx.git /workspace/oh-my-xilinx
 
@@ -86,7 +90,6 @@ RUN git clone https://bitbucket.org/maltanar/oh-my-xilinx.git /workspace/oh-my-x
 # at /workspace/finn -- see run-docker.sh for an example of how to do this.
 ENV PYTHONPATH "${PYTHONPATH}:/workspace/finn/src"
 ENV PYTHONPATH "${PYTHONPATH}:/workspace/pyverilator"
-ENV PYNQSHELL_PATH "/workspace/PYNQ-HelloWorld/boards"
 ENV PATH "${PATH}:/workspace/oh-my-xilinx:/home/$UNAME/.local/bin"
 ENV OHMYXILINX "/workspace/oh-my-xilinx"
 
