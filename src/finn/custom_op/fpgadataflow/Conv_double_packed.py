@@ -41,40 +41,9 @@ from finn.util.data_packing import (
     rtlsim_output_to_npy,
 )
 
-# def get_smallest_possible(self, vals):
-#         """Returns smallest (fewest bits) possible DataType that can represent
-#         value. Prefers unsigned integers where possible."""
-#         vals = np.array(vals)
-#         for v in vals:
-#             assert int(v) == v, "Error float value"
-
-#         for k in DataType.__members__:
-#             dt = DataType[k]
-
-#             if dt in [DataType.BIPOLAR, DataType.TERNARY, DataType.FLOAT32]:
-#                 # not currently supported
-#                 continue
-
-#             if (dt.min() <= vals).all() and (vals <= dt.max()).all():
-#                 return dt
-
-
 class ConvDoublePacked_Batch(HLSCustomOp):
     """
     """
-
-    # def __init__(self, onnx_node):
-    #     super().__init__(onnx_node)
-
-    #     has_thres = self.get_nodeattr("noActivation") == 0
-    #     if has_thres:
-    #         pdt_name = self.get_nodeattr("thresDataType")
-    #         if pdt_name == "":
-    #             # If not provided compute min size
-    #             thres = model.get_initializer(self.onnx_node.input[2])
-    #             pdt = get_smallest_possible([min(thres),max(thres)])
-    #             pdt_name = pdt.name
-    #             self.set_nodeattr("thresDataType", pdt_name)
 
     def get_nodeattr_types(self):
         my_attrs = {
@@ -115,7 +84,6 @@ class ConvDoublePacked_Batch(HLSCustomOp):
             # distributed -- use LUTRAM
             # ultra -- use URAM
             "ram_style": ("s", False, "ultra"),
-            "include_file": ("s", False, ""),
         }
 
         my_attrs.update(super().get_nodeattr_types())
@@ -565,11 +533,6 @@ class ConvDoublePacked_Batch(HLSCustomOp):
         return max([instream, omvau])
 
     def generate_params(self, model, path):
-
-        # copy double packed convolution
-        include_file = self.get_nodeattr("include_file")
-        assert include_file != "", "Need to set the include file path"
-        copy(include_file, path)
 
         # weights
         weights = model.get_initializer(self.onnx_node.input[1])

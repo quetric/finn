@@ -361,7 +361,7 @@ class VitisBuild(Transformation):
     def __init__(
         self, fpga_part, period_ns, platform,
         strategy=VitisOptStrategy.PERFORMANCE,
-        floorplan_file=None
+        floorplan_file=None,
         enable_debug=False
     ):
         super().__init__()

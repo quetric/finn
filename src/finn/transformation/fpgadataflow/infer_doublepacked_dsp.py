@@ -40,10 +40,9 @@ import numpy as np
 class InferDoublePackedConv(Transformation):
     """InferDoublePackedConv """
 
-    def __init__(self, conv_position_to_replace, include_file=""):
+    def __init__(self, conv_position_to_replace):
         super(InferDoublePackedConv, self).__init__()
         self.conv_position_to_replace = tuple(conv_position_to_replace)
-        self.include_file = include_file
 
     def get_smallest_possible(self, vals):
         """Returns smallest (fewest bits) possible DataType that can represent
@@ -235,7 +234,6 @@ class InferDoublePackedConv(Transformation):
                     if has_activation
                     else 1,  # ("i", False, 0), #"ActivationType ("i",True,0)
                     numInputVectors=[1, ofm_dim, ofm_dim],  # ("ints", False, [1]),
-                    include_file=self.include_file,  # ("s", False, ""),
                 )
 
                 # NHWC -> NCHW
