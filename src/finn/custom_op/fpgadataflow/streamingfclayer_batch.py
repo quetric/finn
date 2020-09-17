@@ -230,7 +230,7 @@ class StreamingFCLayer_Batch(HLSCustomOp):
         mem_width = Q * W * P
         mmode = self.get_nodeattr("mem_mode")
         mstyle = self.get_nodeattr("ram_style")
-        if (mmode == "decoupled" and mstyle == "distributed") or (
+        if mmode == "external" or (mmode == "decoupled" and mstyle == "distributed") or (
             mmode == "const" and self.calc_wmem() <= 128
         ):
             return 0
@@ -389,12 +389,24 @@ class StreamingFCLayer_Batch(HLSCustomOp):
         weightstream = self.get_weightstream_width()
         return max([weightstream, temp_value])
 
-    def get_folded_input_shape(self):
+    def get_folded_input_shape(self, ind=0):
         mw = self.get_nodeattr("MW")
+        mh = self.get_nodeattr("MH")
         simd = self.get_nodeattr("SIMD")
+        pe = self.get_nodeattr("PE")
         sf = mw // simd
+        nf = mh // pe
         vecs = list(self.get_nodeattr("numInputVectors"))
-        folded_input_shape = tuple(vecs + [sf, simd])
+        
+        if ind == 0:
+            #calculate shape of input 0
+            folded_input_shape = tuple(vecs + [sf, simd])
+        elif ind == 1 and self.get_nodeattr("mem_mode") == "external":
+            #calculate shape of input 1 (weights)
+            folded_input_shape = tuple(vecs + [sf*nf, simd*pe])
+        else:
+            raise Exception("Undefined input shape for requested input")
+            
         return folded_input_shape
 
     def get_folded_output_shape(self):

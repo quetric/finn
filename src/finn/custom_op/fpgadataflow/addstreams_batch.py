@@ -63,7 +63,7 @@ class AddStreams_Batch(HLSCustomOp):
         ishape = tuple(vecs + [ich])
         return ishape
 
-    def get_folded_input_shape(self):
+    def get_folded_input_shape(self, ind=0):
         ich = self.get_nodeattr("NumChannels")
         pe = self.get_nodeattr("PE")
         assert ich % pe == 0, "PE must divide NumChannels"

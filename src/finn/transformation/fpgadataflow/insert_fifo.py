@@ -76,7 +76,12 @@ class InsertFIFO(Transformation):
                         # check if folded_shape of output of first node and
                         # input of the second node is equal
                         n1 = getCustomOp(consumer)
-                        fld_shape_2 = n1.get_folded_input_shape()
+                        for idx, inp in enumerate(consumer.input):
+                            if inp == n_output:
+                                if idx == 0:
+                                    fld_shape_2 = n1.get_folded_input_shape()
+                                else:
+                                    fld_shape_2 = n1.get_folded_input_shape(ind=idx)
                         assert _suitable_folded_shapes(
                             fld_shape, fld_shape_2
                         ), """The
