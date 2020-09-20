@@ -15,7 +15,7 @@ gecho () {
 BREVITAS_COMMIT=dev
 CNPY_COMMIT=4e8810b1a8637695171ed346ce68f6984e585ef4
 HLSLIB_COMMIT=doublepacked_conv
-PYVERILATOR_COMMIT=c97a5ba41bbc7c419d6f25c74cdf3bdc3393174f
+PYVERILATOR_COMMIT=relax_parse
 OMX_COMMIT=1bae737669901e762f581af73348332b5c4b2ada
 
 gecho "Setting up known-good commit versions for FINN dependencies"

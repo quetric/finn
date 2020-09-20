@@ -125,7 +125,6 @@ class SetFIFODepths(Transformation):
         model = model.transform(PrepareIP(self.fpgapart, self.clk_ns))
         model = model.transform(HLSSynthIP())
         model = model.transform(CreateStitchedIP(self.fpgapart, self.clk_ns))
-        model = model.transform(PrepareRTLSim())
         model.set_metadata_prop("exec_mode", "rtlsim")
 
         # calculate input frequency (number of cycles for each input word)
