@@ -29,6 +29,7 @@
 import copy
 import math
 import numpy as np
+import warnings
 from finn.custom_op.registry import getCustomOp
 from finn.transformation import Transformation
 from finn.util.test import get_build_env
@@ -94,7 +95,7 @@ class SetFIFODepths(Transformation):
                 mmode = node.get_nodeattr("mem_mode")
                 if mmode == "external":
                     node.set_nodeattr("mem_mode", "decoupled")
-                    warnings.warn("Changed mem_mode from external to decoupled for", node.onnx_node.name)
+                    warnings.warn("Changed mem_mode from external to decoupled for " + node.onnx_node.name)
 
         # insert stream infrastructure (DWC/FIFO)
         model = model.transform(InsertDWC())
