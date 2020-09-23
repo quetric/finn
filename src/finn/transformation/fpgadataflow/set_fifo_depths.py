@@ -55,6 +55,12 @@ def set_signal(sim, keyw, value):
         input_name = sim.inputs[i][0]
         if keyw in input_name:
             sim.io[input_name] = value
+            
+def get_signal(sim, keyw):
+    for i in range(len(sim.outputs)):
+        output_name = sim.outputs[i][0]
+        if keyw in output_name:
+            return sim.io[output_name]
 
 def optimize_depth(depth):
     if depth <= 2:
@@ -95,6 +101,9 @@ class SetFIFODepths(Transformation):
                 mmode = node.get_nodeattr("mem_mode")
                 if mmode == "external":
                     node.set_nodeattr("mem_mode", "decoupled")
+                    node.set_nodeattr("code_gen_dir_ipgen", "")
+                    node.set_nodeattr("ipgen_path", "")
+                    node.set_nodeattr("ip_path", "")
                     warnings.warn("Changed mem_mode from external to decoupled for " + node.onnx_node.name)
 
         # insert stream infrastructure (DWC/FIFO)
@@ -147,6 +156,7 @@ class SetFIFODepths(Transformation):
         set_signal(sim, 'tready', 1)
         set_signal(sim, 'tdata', 0)
 
+        output_detected = False
         while ncycles > 0:
             _toggle_clk(sim)
             # set/unset valids
@@ -165,7 +175,20 @@ class SetFIFODepths(Transformation):
                     current_count = current_state
                 if current_count > fifos[key]["depth"]:
                     fifos[key]["depth"] = current_count
-            ncycles = ncycles -1
+                # stop evaluating downstream FIFOs if count is zero
+                if current_count == 0:
+                    break
+                    
+            # since latency estimation is very pessimistic, detect first output 
+            # and fast-forward the sim
+            if get_signal(sim, 'tvalid') != 0 and not output_detected:
+                ncycles = max_cycles
+                output_detected = True
+            else:
+                ncycles = ncycles -1
+
+        if not output_detected:
+            warnings.warn("Simulation finished with no output detected, calculated FIFO depths may not be correct")
 
         # for each node in the original graph, determine in/outFIFODepth
         ret = {}
