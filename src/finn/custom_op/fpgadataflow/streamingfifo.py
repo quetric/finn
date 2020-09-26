@@ -30,6 +30,7 @@ import numpy as np
 from shutil import copy
 import subprocess
 import math
+import warnings
 
 from finn.custom_op.fpgadataflow import HLSCustomOp
 from finn.core.datatype import DataType
@@ -182,10 +183,8 @@ class StreamingFIFO(HLSCustomOp):
             depth >= 2
         ), """Depth is too low. Please set node attribute "depth" to a value
         between 2 and 256"""
-        assert (
-            depth <= 256
-        ), """Depth is too high. Please set node attribute "depth" to a value
-        between 2 and 256"""
+        if depth > 256:
+            warnings.warn("Depth is too high. Please set node attribute depth to a value between 2 and 256")
         # derive normal shape from folded shape
         # StreamingFIFOs are inserted in between fpgadataflow nodes
         # the folded shape could be for example (1, nf, pe)

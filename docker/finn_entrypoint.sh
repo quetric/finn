@@ -12,7 +12,7 @@ gecho () {
 
 # checkout the correct dependency repo commits
 # the repos themselves are cloned in the Dockerfile
-BREVITAS_COMMIT=dev
+BREVITAS_COMMIT=feature/finn_onnx_export_dev
 CNPY_COMMIT=4e8810b1a8637695171ed346ce68f6984e585ef4
 HLSLIB_COMMIT=doublepacked_conv
 PYVERILATOR_COMMIT=relax_parse

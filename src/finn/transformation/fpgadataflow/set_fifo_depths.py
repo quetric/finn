@@ -30,6 +30,7 @@ import copy
 import math
 import numpy as np
 import warnings
+import json
 from finn.custom_op.registry import getCustomOp
 from finn.transformation import Transformation
 from finn.util.test import get_build_env
@@ -41,7 +42,8 @@ from finn.transformation.fpgadataflow.create_stitched_ip import CreateStitchedIP
 from finn.transformation.fpgadataflow.prepare_rtlsim import PrepareRTLSim
 from finn.transformation.fpgadataflow.insert_dwc import InsertDWC
 from finn.transformation.fpgadataflow.insert_fifo import InsertFIFO
-from finn.transformation.general import GiveUniqueNodeNames
+from finn.transformation.general import GiveUniqueNodeNames, GiveReadableTensorNames
+from finn.util.basic import make_build_dir
 from finn.core.rtlsim_exec import (
     _reset_rtlsim,
     _toggle_clk,
@@ -49,6 +51,11 @@ from finn.core.rtlsim_exec import (
 from finn.util.fpgadataflow import (
     pyverilate_stitched_ip,
 )
+
+def reset_implementation(node):
+    node.set_nodeattr("code_gen_dir_ipgen", "")
+    node.set_nodeattr("ipgen_path", "")
+    node.set_nodeattr("ip_path", "")
 
 def set_signal(sim, keyw, value):
     for i in range(len(sim.inputs)):
@@ -69,7 +76,7 @@ def optimize_depth(depth):
         return 32
     if depth <= 1024:
         return int(2**math.ceil(math.log2(depth)))
-    return int(math.ceil(depth/1024))
+    return int(math.ceil(depth/1024)*1024)
 
 class SetFIFODepths(Transformation):
     """Determines minimum depths of StreamingFIFOs through RTLSim.
@@ -78,54 +85,46 @@ class SetFIFODepths(Transformation):
     images on input (random/constant data) and keep track of maximum
     occupancy counts in each FIFO."""
     
-    def __init__(self, fpgapart, clk_ns=10.0):
+    def __init__(self, fpgapart, clk_ns=10.0, max_qsrl_depth=256, max_depth=2**14):
         super().__init__()
         self.fpgapart = fpgapart
         self.clk_ns = clk_ns
+        self.max_qsrl_depth = max_qsrl_depth
+        self.max_depth = max_depth
     
     def apply(self, model):
-        
-        orig_model = model
-        
-        # work on a copy of the model
-        model = copy.deepcopy(model)
 
         # TODO:
         # change external to decoupled and warn user; this way we are sure we have exactly one input/output
         # set 16k to nodes not FIFOs (we have to handle cases where fifos have not been inserted yet)
+        modified_fc_nodes = []
         for node in model.graph.node:
             node = getCustomOp(node)
-            node.set_nodeattr("inFIFODepth",  2**14)
-            node.set_nodeattr("outFIFODepth",  2**14)
+            node.set_nodeattr("inFIFODepth",  self.max_depth)
+            node.set_nodeattr("outFIFODepth",  self.max_depth)
             if node.onnx_node.op_type == "StreamingFCLayer_Batch":
                 mmode = node.get_nodeattr("mem_mode")
                 if mmode == "external":
+                    modified_fc_nodes.append(node.onnx_node.name)
                     node.set_nodeattr("mem_mode", "decoupled")
-                    node.set_nodeattr("code_gen_dir_ipgen", "")
-                    node.set_nodeattr("ipgen_path", "")
-                    node.set_nodeattr("ip_path", "")
+                    reset_implementation(node)
                     warnings.warn("Changed mem_mode from external to decoupled for " + node.onnx_node.name)
 
         # insert stream infrastructure (DWC/FIFO)
         model = model.transform(InsertDWC())
         model = model.transform(InsertFIFO())
         model = model.transform(GiveUniqueNodeNames())
+        model = model.transform(GiveReadableTensorNames())
 
         # gather FIFO names, check they are of expected depth
         fifos = {}
         for node in model.graph.node:
             if node.op_type == "StreamingFIFO":
-                consumer = model.find_consumers(node.output[0])
-                if consumer is not None:
-                    consumer = consumer[0].name
-                producer = model.find_producer(node.input[0])
-                if producer is not None:
-                    producer = producer.name
-                fifos[node.name] = {"depth": 0, "consumer": consumer, "producer": producer}
+                fifos[node.name] = 0
                 node = getCustomOp(node)
                 # check depths; if model came in with FIFOs, the depths will not have been updated
-                if node.get_nodeattr("depth") != 2**14:
-                    node.set_nodeattr("depth", 2**14)
+                if node.get_nodeattr("depth") != self.max_depth:
+                    node.set_nodeattr("depth", self.max_depth)
 
         # insert FIFOs and do all transformations for RTLsim
         model = model.transform(AnnotateCycles())
@@ -139,7 +138,7 @@ class SetFIFODepths(Transformation):
 
         # calculate input frequency (number of cycles for each input word)
         first_node = getCustomOp(model.graph.node[0])
-        ncycles_per_input = math.ceil(perf["max_cycles"]/(np.prod(first_node.get_folded_input_shape()) / first_node.get_folded_input_shape()[-1]))
+        ncycles_per_input = max(1,int(math.ceil(perf["max_cycles"]/(np.prod(first_node.get_folded_input_shape()) / first_node.get_folded_input_shape()[-1]))))
 
         #set sufficiently large threshold for 1 image to  fully execute and exit
         ncycles = int(latency + max_cycles)
@@ -173,11 +172,8 @@ class SetFIFODepths(Transformation):
                     current_count = current_addr + 2
                 else:
                     current_count = current_state
-                if current_count > fifos[key]["depth"]:
-                    fifos[key]["depth"] = current_count
-                # stop evaluating downstream FIFOs if count is zero
-                if current_count == 0:
-                    break
+                if current_count > fifos[key]:
+                    fifos[key] = current_count
                     
             # since latency estimation is very pessimistic, detect first output 
             # and fast-forward the sim
@@ -190,29 +186,60 @@ class SetFIFODepths(Transformation):
         if not output_detected:
             warnings.warn("Simulation finished with no output detected, calculated FIFO depths may not be correct")
 
-        # for each node in the original graph, determine in/outFIFODepth
-        ret = {}
-        for key in fifos:
-            predecessor_node = fifos[key]["producer"]
-            if predecessor_node is not None:
-                if predecessor_node not in ret:
-                    ret[predecessor_node] = {"inFIFODepth": 0, "outFIFODepth": 0}
-                out_depth = ret[predecessor_node]["outFIFODepth"]
-                ret[predecessor_node]["outFIFODepth"] = max(out_depth, fifos[key]["depth"])
+        # Apply depths back into the model; 
+        # also set in/outFIFODepth to zero for non-FIFO nodes, preventing further FIFO insertion
+        for node in model.graph.node:
+            # set FIFO depth, reset FIFO implementation, and set implementation/ram styles
+            if node.op_type == "StreamingFIFO":
+                assert node.name in fifos, "FIFO node not found in size dictionary"
+                # set depth of FIFO
+                depth = optimize_depth(fifos[node.name])
+                node_inst = getCustomOp(node)
+                node_inst.set_nodeattr("depth", depth)
+                # Set FIFO implementation/ram styles
+                if depth > self.max_qsrl_depth:
+                    node_inst.set_nodeattr("impl_style", "vivado")
+                    node_inst.set_nodeattr("ram_style", "auto")
+                else:
+                    node_inst.set_nodeattr("impl_style", "rtl")
+                # reset implementation
+                reset_implementation(node_inst)
+                del fifos[node.name]
+            else:
+                getCustomOp(node).set_nodeattr("inFIFODepth", 0)
+                getCustomOp(node).set_nodeattr("outFIFODepth", 0)
+                # for every FC node we changed from external to decoupled, 
+                # change back and reset implementation
+                if node.op_type == "StreamingFCLayer_Batch":
+                    if node.name in modified_fc_nodes:
+                        node_inst = getCustomOp(node)
+                        node_inst.set_nodeattr("mem_mode", "external")
+                        reset_implementation(node_inst)
+                        modified_fc_nodes.remove(node.name)
             
-            succcessor_node = fifos[key]["consumer"]
-            if succcessor_node is not None:
-                if succcessor_node not in ret:
-                    ret[succcessor_node] = {"inFIFODepth": 0, "outFIFODepth": 0}
-                in_depth = ret[succcessor_node]["inFIFODepth"]
-                ret[succcessor_node]["inFIFODepth"] = max(in_depth, fifos[key]["depth"])
-            
-        # tweak and apply depths to original model
-        for node in orig_model.graph.node:
-            if node.name in ret:
-                depths = ret[node.name]
-                node = getCustomOp(node)
-                node.set_nodeattr("inFIFODepth", optimize_depth(depths["inFIFODepth"]))
-                node.set_nodeattr("outFIFODepth", optimize_depth(depths["outFIFODepth"]))
-            
-        return (orig_model, False)
+        assert len(modified_fc_nodes) == 0 and len(fifos.keys()) == 0, "FIFO/FC nodes left untouched after model reconfiguration"
+
+        # Remove FIFOs which have depth <= 2
+        shallow_fifos = []
+        # First, bypass them
+        for node in model.graph.node:
+            if node.op_type == "StreamingFIFO" and getCustomOp(node).get_nodeattr("depth") <= 2:
+                shallow_fifos.append(node)
+                consumers = model.find_consumers(node.output[0])
+                if consumers is None:
+                    producer = model.find_producer(node.input[0])
+                    for idx, inp in enumerate(producer.output):
+                        if inp == node.input[0]:
+                            producer.output[idx] = node.output[0]
+                else:
+                    assert len(consumers) == 1, "Fanout detected from FIFO output"
+                    consumer = consumers[0]
+                    # set fifo input tensor as new input tensor of second node
+                    for idx, inp in enumerate(consumer.input):
+                        if inp == node.output[0]:
+                            consumer.input[idx] = node.input[0]
+        # now filter out 
+        for node_to_remove in shallow_fifos:
+            model.graph.node.remove(node_to_remove)
+
+        return (model, False)
