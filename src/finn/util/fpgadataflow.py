@@ -91,15 +91,13 @@ def pyverilate_stitched_ip(model):
     build_dir = make_build_dir("pyverilator_ipstitched_")
 
     # dump all Verilog code to a single file
-    # this is because large models with many files require 
+    # this is because large models with many files require
     # a verilator command line too long for bash on most systems
-    # NOTE: there are duplicates in this list, and some files 
+    # NOTE: there are duplicates in this list, and some files
     # are identical but in multiple directories (regslice_core.v)
-    
+
     # remove duplicates from list by doing list -> set -> list
-    all_verilog_files = list(
-        set(filter(lambda x: x.endswith(".v"), all_verilog_srcs))
-    )
+    all_verilog_files = list(set(filter(lambda x: x.endswith(".v"), all_verilog_srcs)))
 
     # remove all but one instances of regslice_core.v
     filtered_verilog_files = []
@@ -113,10 +111,10 @@ def pyverilate_stitched_ip(model):
             filtered_verilog_files.append(vfile)
 
     # concatenate all verilog code into a single file
-    with open(vivado_stitch_proj_dir+"/"+top_module_file_name, "w") as wf:
+    with open(vivado_stitch_proj_dir + "/" + top_module_file_name, "w") as wf:
         for vfile in filtered_verilog_files:
             with open(vfile) as rf:
-                wf.write("//Added from "+vfile+"\n\n")
+                wf.write("//Added from " + vfile + "\n\n")
                 wf.write(rf.read())
 
     sim = PyVerilator.build(
