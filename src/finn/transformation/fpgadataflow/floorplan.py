@@ -84,10 +84,11 @@ class Floorplan(Transformation):
                 # assign memory port
                 if node.op_type == "IODMA":
                     if node.name in self.user_floorplan:
-                        mem_port = self.user_floorplan[node.name]["mem_port"]
+                        mem_port = self.user_floorplan[node.name].get("mem_port", None)
                     elif "default" in self.user_floorplan:
-                        mem_port = self.user_floorplan["default"]["mem_port"]
-                    node_inst.set_nodeattr("mem_port", mem_port)
+                        mem_port = self.user_floorplan["default"].get("mem_port", None)
+                    if mem_port is not None:
+                        node_inst.set_nodeattr("mem_port", mem_port)
 
             if unassigned_nodes > 0:
                 warnings.warn(
@@ -96,62 +97,61 @@ class Floorplan(Transformation):
                     + "and no default value was set"
                 )
 
-        else:
-            # partition id generation
-            partition_cnt = 0
+        # partition id generation
+        partition_cnt = 0
 
-            # Assign IODMAs to their own partitions
-            dma_nodes = list(filter(lambda x: x.op_type == "IODMA", df_nodes))
-            for node in dma_nodes:
-                node_inst = getCustomOp(node)
+        # Assign IODMAs to their own partitions
+        dma_nodes = list(filter(lambda x: x.op_type == "IODMA", df_nodes))
+        for node in dma_nodes:
+            node_inst = getCustomOp(node)
+            node_inst.set_nodeattr("partition_id", partition_cnt)
+            partition_cnt += 1
+
+        non_dma_nodes = list(filter(lambda x: x not in dma_nodes, df_nodes))
+        dyn_tlastmarker_nodes = list(
+            filter(
+                lambda x: x.op_type == "TLastMarker"
+                and getCustomOp(x).get_nodeattr("DynIters") == "true",
+                non_dma_nodes,
+            )
+        )
+        non_dma_nodes = list(
+            filter(lambda x: x not in dyn_tlastmarker_nodes, non_dma_nodes)
+        )
+
+        for node in dyn_tlastmarker_nodes:
+            node_inst = getCustomOp(node)
+            node_inst.set_nodeattr("partition_id", partition_cnt)
+            partition_cnt += 1
+
+        for node in non_dma_nodes:
+            pre_node = model.find_producer(node.input[0])
+            node_inst = getCustomOp(node)
+            if pre_node not in non_dma_nodes:
+                # input node
                 node_inst.set_nodeattr("partition_id", partition_cnt)
                 partition_cnt += 1
+                continue
+            elif not (
+                node.op_type == "StreamingFCLayer_Batch"
+                and node_inst.get_nodeattr("mem_mode") is not None
+                and node_inst.get_nodeattr("mem_mode") == "external"
+            ):
+                pre_nodes = model.find_direct_predecessors(node)
+            else:
+                pre_nodes = [pre_node]
 
-            non_dma_nodes = list(filter(lambda x: x not in dma_nodes, df_nodes))
-            dyn_tlastmarker_nodes = list(
-                filter(
-                    lambda x: x.op_type == "TLastMarker"
-                    and getCustomOp(x).get_nodeattr("DynIters") == "true",
-                    non_dma_nodes,
-                )
-            )
-            non_dma_nodes = list(
-                filter(lambda x: x not in dyn_tlastmarker_nodes, non_dma_nodes)
-            )
-
-            for node in dyn_tlastmarker_nodes:
-                node_inst = getCustomOp(node)
+            node_slr = node_inst.get_nodeattr("slr")
+            for pre_node in pre_nodes:
+                pre_inst = getCustomOp(pre_node)
+                pre_slr = pre_inst.get_nodeattr("slr")
+                if node_slr == pre_slr:
+                    partition_id = pre_inst.get_nodeattr("partition_id")
+                    node_inst.set_nodeattr("partition_id", partition_id)
+                    break
+            else:
+                # no matching, new partition
                 node_inst.set_nodeattr("partition_id", partition_cnt)
                 partition_cnt += 1
-
-            for node in non_dma_nodes:
-                pre_node = model.find_producer(node.input[0])
-                node_inst = getCustomOp(node)
-                if pre_node not in non_dma_nodes:
-                    # input node
-                    node_inst.set_nodeattr("partition_id", partition_cnt)
-                    partition_cnt += 1
-                    continue
-                elif not (
-                    node.op_type == "StreamingFCLayer_Batch"
-                    and node_inst.get_nodeattr("mem_mode") is not None
-                    and node_inst.get_nodeattr("mem_mode") == "external"
-                ):
-                    pre_nodes = model.find_direct_predecessors(node)
-                else:
-                    pre_nodes = [pre_node]
-
-                node_slr = node_inst.get_nodeattr("slr")
-                for pre_node in pre_nodes:
-                    pre_inst = getCustomOp(pre_node)
-                    pre_slr = pre_inst.get_nodeattr("slr")
-                    if node_slr == pre_slr:
-                        partition_id = pre_inst.get_nodeattr("partition_id")
-                        node_inst.set_nodeattr("partition_id", partition_id)
-                        break
-                else:
-                    # no matching, new partition
-                    node_inst.set_nodeattr("partition_id", partition_cnt)
-                    partition_cnt += 1
 
         return (model, False)
