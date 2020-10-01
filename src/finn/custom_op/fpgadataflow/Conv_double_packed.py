@@ -29,6 +29,7 @@
 import os
 import numpy as np
 from shutil import copy
+import math
 
 from finn.custom_op.fpgadataflow import HLSCustomOp
 from finn.core.datatype import DataType
@@ -188,23 +189,77 @@ class ConvDoublePacked_Batch(HLSCustomOp):
         pass
 
     def bram_estimation(self):
-        # sum  conv and mvau.
-        # MMV (x2)
-        pass
+        P = self.get_nodeattr("PE")
+        Q = self.get_nodeattr("SIMD")
+        wdt = self.get_weight_datatype()
+        W = wdt.bitwidth()
+        D_in = self.get_nodeattr("MW")
+        D_out = self.get_nodeattr("MH")
+        omega = (D_in * D_out) / (Q * P)
+        mem_width = Q * W * P
+        # assuming SDP mode RAMB18s (see UG573 Table 1-10)
+        # assuming decoupled (RTL) memory, which is more efficient than const (HLS)
+        if mem_width == 1:
+            return math.ceil(omega / 16384)
+        elif mem_width == 2:
+            return math.ceil(omega / 8192)
+        elif mem_width <= 4:
+            return (math.ceil(omega / 4096)) * (math.ceil(mem_width / 4))
+        elif mem_width <= 9:
+            return (math.ceil(omega / 2048)) * (math.ceil(mem_width / 9))
+        elif mem_width <= 18 or omega > 512:
+            return (math.ceil(omega / 1024)) * (math.ceil(mem_width / 18))
+        else:
+            return (math.ceil(omega / 512)) * (math.ceil(mem_width / 36))
 
     def bram_efficiency_estimation(self):
-        pass
+        wdt = self.get_weight_datatype()
+        W = wdt.bitwidth()
+        D_in = self.get_nodeattr("MW")
+        D_out = self.get_nodeattr("MH")
+        bram16_est = self.bram_estimation()
+        if bram16_est == 0:
+            return 1
+        wbits = W * D_in * D_out
+        bram16_est_capacity = bram16_est * 36 * 512
+        return wbits / bram16_est_capacity
+
+    def lut_estimation(self):
+        P = self.get_nodeattr("PE")
+        Q = self.get_nodeattr("SIMD")
+        MW = self.get_nodeattr("MW")
+        wdt = self.get_weight_datatype()
+        W = wdt.bitwidth()
+        # determine tdt with input and weight data types
+        idt = self.get_input_datatype()
+        A = idt.bitwidth()
+        # parameters from experiments in paper mentioned above
+        c0 = 300
+        c1 = 1.1
+        # adder tree
+        addertree_luts = (W + A) * (2 * Q - 1)
+        # accumulator
+        acc_bits = W + A + np.ceil(math.log(MW, 2))
+        acc_luts = acc_bits
+        # thresholds and threshold comparators
+        thr_luts = 0
+        comp_luts = 0
+        noact = self.get_nodeattr("noActivation")
+        if noact == 0:
+            odt = self.get_output_datatype()
+            B = odt.bitwidth()
+            thr_luts = (2 ** B - 1) * acc_bits * math.ceil(self.calc_tmem() / 64)
+            comp_luts = (2 ** B - 1) * acc_bits
+
+        return int(
+            c0 + c1 * (P * (addertree_luts + acc_luts + thr_luts + comp_luts))
+        )
 
     def dsp_estimation(self):
         pe = self.get_nodeattr("PE")
         mmv = self.get_nodeattr("MMV")
         simd = self.get_nodeattr("SIMD")
-        return pe * mmv * simd
-
-    def lut_estimation(self):
-        # sum conv and mvau. take into account packed DSP
-        # MMV (x2)
-        pass
+        return int(pe * mmv * simd / 2)
 
     def calc_wmem(self):
         """Calculates and returns WMEM."""
