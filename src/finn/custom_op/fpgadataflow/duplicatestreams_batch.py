@@ -375,5 +375,5 @@ class DuplicateStreams_Batch(HLSCustomOp):
 
     def get_verilog_top_module_intf_names(self):
         intf_names = super().get_verilog_top_module_intf_names()
-        intf_names["m_axis"] = ["out0_V_V", "out1_V_V"]
+        intf_names["m_axis"] = [("out0_V_V", self.get_outstream_width_padded()), ("out1_V_V", self.get_outstream_width_padded())]
         return intf_names

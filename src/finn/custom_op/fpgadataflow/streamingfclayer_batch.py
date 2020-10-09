@@ -1133,8 +1133,8 @@ class StreamingFCLayer_Batch(HLSCustomOp):
             # create a hierarchy for this layer, with the same port names
             clk_name = self.get_verilog_top_module_intf_names()["clk"][0]
             rst_name = self.get_verilog_top_module_intf_names()["rst"][0]
-            dout_name = self.get_verilog_top_module_intf_names()["m_axis"][0]
-            din_name = self.get_verilog_top_module_intf_names()["s_axis"][0]
+            dout_name = self.get_verilog_top_module_intf_names()["m_axis"][0][0]
+            din_name = self.get_verilog_top_module_intf_names()["s_axis"][0][0]
             cmd.append("create_bd_cell -type hier %s" % node_name)
             cmd.append("create_bd_pin -dir I -type clk /%s/%s" % (node_name, clk_name))
             cmd.append("create_bd_pin -dir I -type rst /%s/%s" % (node_name, rst_name))
@@ -1213,8 +1213,8 @@ class StreamingFCLayer_Batch(HLSCustomOp):
                 % (node_name, dout_name, node_name, node_name, dout_name)
             )
             cmd.append("save_bd_design")
-        elif mem_mode == "const":
-            # base class impl sufficient for const mode
+        elif mem_mode == "const" or mem_mode == "external":
+            # base class impl sufficient for const/external modes
             return super().code_generation_ipi()
         else:
             raise Exception("Unrecognized mem_mode for StreamingFCLayer")
@@ -1224,5 +1224,5 @@ class StreamingFCLayer_Batch(HLSCustomOp):
         intf_names = super().get_verilog_top_module_intf_names()
         mem_mode = self.get_nodeattr("mem_mode")
         if mem_mode == "external":
-            intf_names["s_axis"] = ["in0_V_V", "weights_V_V"]
+            intf_names["s_axis"].append(("weights_V_V",self.get_weightstream_width_padded()))
         return intf_names
