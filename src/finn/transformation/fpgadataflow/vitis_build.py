@@ -109,10 +109,15 @@ class CreateVitisXO(Transformation):
                     str(interfaces['aximm'][0][1]))
                 )
                 arg_id += 1
-            args_string.append(
-                "{numReps:0:%s:s_axi_control:0x4:0x10:uint:0}" % str(arg_id)
-            )
-            arg_id += 1
+                args_string.append(
+                    "{numReps:0:%s:s_axi_control:0x4:0x1C:uint:0}" % str(arg_id)
+                )
+                arg_id += 1
+            else:
+                args_string.append(
+                    "{numReps:0:%s:s_axi_control:0x4:0x10:uint:0}" % str(arg_id)
+                )
+                arg_id += 1
         for intf in (interfaces['s_axis']+interfaces['m_axis']):
             stream_width = intf[1]
             stream_name = intf[0]
