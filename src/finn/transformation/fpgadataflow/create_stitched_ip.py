@@ -55,8 +55,8 @@ def is_external_input(model, node, i):
                 if node_inst.get_nodeattr("mem_mode") == "external":
                     return True
     return False
-    
-    
+
+
 def is_external_output(model, node, i):
     # indicate whether output i of node should be made external
     # True only if output is unconnected
@@ -64,7 +64,7 @@ def is_external_output(model, node, i):
     if consumers is None:
         return True
     return False
-    
+
 
 class CreateStitchedIP(Transformation):
     """Create a Vivado IP Block Design project from all the generated IPs of a
@@ -191,7 +191,9 @@ class CreateStitchedIP(Transformation):
                 % (self.m_axis_idx, output_intf_name)
             )
             self.has_m_axis = True
-            self.intf_names["m_axis"].append(("m_axis_%d" % self.m_axis_idx, output_intf_names[i][1]))
+            self.intf_names["m_axis"].append(
+                ("m_axis_%d" % self.m_axis_idx, output_intf_names[i][1])
+            )
             self.m_axis_idx += 1
 
     def connect_s_axis_external(self, node, idx=None):
@@ -212,7 +214,9 @@ class CreateStitchedIP(Transformation):
                 % (self.s_axis_idx, input_intf_name)
             )
             self.has_s_axis = True
-            self.intf_names["s_axis"].append(("s_axis_%d" % self.s_axis_idx, input_intf_names[i][1]))
+            self.intf_names["s_axis"].append(
+                ("s_axis_%d" % self.s_axis_idx, input_intf_names[i][1])
+            )
             self.s_axis_idx += 1
 
     def apply(self, model):
@@ -236,7 +240,7 @@ class CreateStitchedIP(Transformation):
             assert os.path.isdir(ip_dir_value), "IP generation directory doesn't exist."
             ip_dirs += [ip_dir_value]
             self.create_cmds += node_inst.code_generation_ipi()
-            my_producer = model.find_producer(node.input[0])
+            # my_producer = model.find_producer(node.input[0])
             self.connect_clk_rst(node)
             self.connect_axi(node)
             for i in range(len(node.input)):
@@ -261,7 +265,6 @@ class CreateStitchedIP(Transformation):
             for i in range(len(node.output)):
                 if is_external_output(model, node, i):
                     self.connect_m_axis_external(node, idx=i)
-
 
         # create a temporary folder for the project
         prjname = "finn_vivado_stitch_proj"
@@ -321,6 +324,7 @@ class CreateStitchedIP(Transformation):
             tcl.append("write_verilog -force -mode synth_stub %s.v" % block_name)
             tcl.append("write_checkpoint %s.dcp" % block_name)
             tcl.append("write_xdc %s.xdc" % block_name)
+            tcl.append("report_utilization -file %s_partition_util.rpt" % block_name)
         # export block design itself as an IP core
         block_vendor = "xilinx_finn"
         block_library = "finn"
