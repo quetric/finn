@@ -416,8 +416,13 @@ class StreamingDataWidthConverter_Batch(HLSCustomOp):
             )
             cmd.append(
                 "set_property -dict "
-                "[list CONFIG.S_TDATA_NUM_BYTES.VALUE_SRC PROPAGATED] "
+                "[list CONFIG.S_TDATA_NUM_BYTES.VALUE_SRC USER] "
                 "[get_bd_cells /%s/dwc]" % node_name
+            )
+            cmd.append(
+                "set_property -dict "
+                "[list CONFIG.S_TDATA_NUM_BYTES {%d}] [get_bd_cells /%s/dwc]"
+                % (np.ceil(self.get_instream_width() / 8), node_name)
             )
             cmd.append(
                 "set_property -dict "
@@ -449,7 +454,7 @@ class StreamingDataWidthConverter_Batch(HLSCustomOp):
 
     def lut_estimation(self):
         """Calculates resource estimations for LUTs"""
-        impl = self.get_nodeattr("impl_style")
+        # impl = self.get_nodeattr("impl_style")
         inw = self.get_instream_width()
         outw = self.get_outstream_width()
 
@@ -459,7 +464,7 @@ class StreamingDataWidthConverter_Batch(HLSCustomOp):
         # sometimes withs aren't directly divisible
         # this requires going up from input width to least common multiple
         # then down to output width
-        intw = abs(maxw*minw) // math.gcd(maxw, minw)
+        intw = abs(maxw * minw) // math.gcd(maxw, minw)
 
         # we assume a shift-based implementation
         # even if we don't use LUTs explicitly, we make some unavailable
@@ -469,11 +474,10 @@ class StreamingDataWidthConverter_Batch(HLSCustomOp):
         cset_luts = 0
 
         if inw != intw:
-            cnt_luts += abs(math.ceil(math.log(inw/intw, 2)))
+            cnt_luts += abs(math.ceil(math.log(inw / intw, 2)))
             cset_luts += intw
         if intw != outw:
             cnt_luts += abs(math.ceil(math.log(intw / outw, 2)))
             cset_luts += outw
 
-        return int(cnt_luts+cset_luts)
-
+        return int(cnt_luts + cset_luts)
